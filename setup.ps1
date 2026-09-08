@@ -1,0 +1,66 @@
+[CmdletBinding()]
+param(
+    [ValidateSet('CPU','CUDA')][string]$Device = 'CPU',
+    [switch]$IncludeSharp,
+    [switch]$SkipModelDownload,
+    [string]$PythonExe = ''
+)
+$ErrorActionPreference = 'Stop'
+Set-Location -LiteralPath $PSScriptRoot
+
+function Invoke-Checked {
+    param([string]$Program, [string[]]$Arguments)
+    & $Program @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "Command failed ($LASTEXITCODE): $Program $($Arguments -join ' ')" }
+}
+
+Write-Host 'Gaussian Scene Studio setup' -ForegroundColor Cyan
+Write-Host "Selected inference runtime: $Device"
+if (-not (Test-Path -LiteralPath '.venv\Scripts\python.exe')) {
+    $candidates = @()
+    if ($PythonExe) { $candidates += $PythonExe }
+    $pyLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($pyLauncher) {
+        try {
+            $found = & $pyLauncher.Source -3.11 -c 'import sys; print(sys.executable)' 2>$null
+            if ($LASTEXITCODE -eq 0) { $candidates += $found }
+        } catch { }
+    }
+    $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($pythonCommand -and $pythonCommand.Source -notlike '*\WindowsApps\*') { $candidates += $pythonCommand.Source }
+    $basePython = $null
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        try {
+            & $candidate -c 'import sys; assert sys.version_info[:2] == (3,11) and sys.maxsize > 2**32' 2>$null
+            if ($LASTEXITCODE -eq 0) { $basePython = $candidate; break }
+        } catch { }
+    }
+    if (-not $basePython) { throw 'Install 64-bit Python 3.11 from python.org (include the launcher), then run setup again. Or use -PythonExe C:\Path\To\python.exe.' }
+    Invoke-Checked $basePython @('-m','venv','.venv')
+}
+$appPython = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
+Invoke-Checked $appPython @('-c','import sys; sys.exit(0 if sys.version_info[:2] == (3,11) else 1)')
+Invoke-Checked $appPython @('-m','pip','install','--upgrade','pip')
+Invoke-Checked $appPython @('-m','pip','install','-r','requirements.txt','-r','requirements-torch-runtime.txt','-c','constraints-windows-py311.txt')
+$wheelIndex = if ($Device -eq 'CUDA') { 'https://download.pytorch.org/whl/cu128' } else { 'https://download.pytorch.org/whl/cpu' }
+# A device switch must replace a pre-existing CPU/CUDA wheel, not report it satisfied.
+$desiredRuntime = if ($Device -eq 'CUDA') { 'cu128' } else { 'cpu' }
+$installedRuntime = & $appPython 'scripts\runtime_version.py'
+$torchArguments = @('-m','pip','install','--no-deps','torch==2.8.0','torchvision==0.23.0','--index-url',$wheelIndex)
+if ($installedRuntime -notlike "*+$desiredRuntime*") { $torchArguments += '--force-reinstall' }
+Invoke-Checked $appPython $torchArguments
+if ($IncludeSharp) {
+    Write-Host 'SHARP model weights: non-commercial scientific research only. See docs\MODEL-LICENSES.md.' -ForegroundColor Yellow
+    Invoke-Checked $appPython @('-m','pip','install','-r','requirements-sharp.txt','-c','constraints-windows-py311.txt')
+    Invoke-Checked $appPython @('scripts\install_sharp.py')
+}
+if (-not $SkipModelDownload) {
+    Invoke-Checked $appPython @('scripts\download_models.py','--model','depth')
+    if ($IncludeSharp) { Invoke-Checked $appPython @('scripts\download_models.py','--model','sharp') }
+}
+Invoke-Checked $appPython @('-m','pip','check')
+$doctorArgs = @('scripts\doctor.py')
+if ($Device -eq 'CUDA') { $doctorArgs += '--require-cuda' }
+Invoke-Checked $appPython $doctorArgs
+Write-Host 'Setup complete. Double-click Start Studio.cmd.' -ForegroundColor Green
