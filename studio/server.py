@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from studio.config import DATA, DEPTH_DIR, MAX_PIXELS, MAX_UPLOAD, ROOT, SHARP_SOURCE, SHARP_WEIGHTS
+from studio.config import DATA, DEPTH_DIR, MAX_IMAGES, MAX_PIXELS, MAX_UPLOAD, ROOT, SHARP_SOURCE, SHARP_WEIGHTS
 from studio.gaussians import export_scene, make_demo
 
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
@@ -89,19 +89,22 @@ class Jobs:
                 job["scene"] = json.loads((path / "scene.json").read_text())
             return job
 
-    def create(self, image, filename, options):
+    def create(self, images, filenames, options):
         with self.lock:
             if self.active:
                 raise HTTPException(409, "A reconstruction is already running. Wait for it or cancel it first.")
             job_id = uuid.uuid4().hex
             path = self.root / job_id
             path.mkdir()
-            image.save(path / "input.png")
-            thumb = image.copy()
+            for index, image in enumerate(images):
+                image.save(path / ("input.png" if index == 0 else f"input_{index}.png"))
+            thumb = images[0].copy()
             thumb.thumbnail((480, 360))
             thumb.save(path / "thumbnail.jpg", quality=85)
             atomic_json(path / "request.json", options)
-            job = {"id": job_id, "name": Path(filename.replace("\\", "/")).name[:120], "created": datetime.now(timezone.utc).isoformat(), "status": "running", "progress": 0, "message": "Starting reconstruction", "engine": options["engine"]}
+            first_name = Path(filenames[0].replace("\\", "/")).name[:100]
+            name = first_name if len(images) == 1 else f"{first_name} + {len(images)-1} views"
+            job = {"id": job_id, "name": name, "created": datetime.now(timezone.utc).isoformat(), "status": "running", "progress": 0, "message": "Starting reconstruction", "engine": options["engine"], "image_count": len(images)}
             atomic_json(path / "job.json", job)
             self.active = job_id
             threading.Thread(target=self.run, args=(job_id,), daemon=True).start()
@@ -211,8 +214,8 @@ def create_app(data_dir=None):
                 raw = bytearray()
                 async for chunk in request.stream():
                     raw.extend(chunk)
-                    if len(raw) > MAX_UPLOAD + 1024*1024:
-                        return JSONResponse({"detail": "Upload must be under 20 MB"}, status_code=413)
+                    if len(raw) > MAX_UPLOAD * MAX_IMAGES + 1024*1024:
+                        return JSONResponse({"detail": "Each image must be under 20 MB and at most four images may be uploaded"}, status_code=413)
                 request._body = bytes(raw)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -225,37 +228,73 @@ def create_app(data_dir=None):
         return {"app": "Gaussian Scene Studio", "version": "1.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "models": {"depth": (DEPTH_DIR / "model.safetensors").is_file(), "sharp": SHARP_WEIGHTS.is_file() and sharp_source.is_file()}, "active_job": app.state.jobs.active}
 
     @app.post("/api/jobs", status_code=202)
-    async def upload(image: UploadFile = File(...), engine: str = Form("depth"), device: str = Form("auto"), resolution: int = Form(512), depth_strength: float = Form(1.0), research_use: bool = Form(False)):
+    async def upload(
+        images: list[UploadFile] | None = File(None),
+        image: UploadFile | None = File(None),
+        views: list[str] | None = Form(None),
+        engine: str = Form("depth"),
+        device: str = Form("auto"),
+        resolution: int = Form(512),
+        depth_strength: float = Form(1.0),
+        research_use: bool = Form(False),
+    ):
         if engine not in ("depth", "sharp") or device not in ("auto", "cpu", "cuda"):
             raise HTTPException(422, "Invalid model or device")
         if resolution not in (384, 512, 768) or not 0.25 <= depth_strength <= 1.5:
             raise HTTPException(422, "Invalid quality or depth range")
         if engine == "sharp" and not research_use:
             raise HTTPException(422, "SHARP weights are limited to non-commercial scientific research. Confirm your permitted use or choose Depth Anything V2 Small.")
-        payload = await image.read(MAX_UPLOAD+1)
-        await image.close()
-        if len(payload) > MAX_UPLOAD:
-            raise HTTPException(413, "Upload must be under 20 MB")
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", Image.DecompressionBombWarning)
-                with Image.open(io.BytesIO(payload)) as source:
-                    if source.format not in ("JPEG", "PNG", "WEBP"):
-                        raise HTTPException(415, "Please use a JPEG, PNG or WebP image")
-                    w, h = source.size
-                    if w*h > MAX_PIXELS or min(w,h) < 32 or max(w,h)/min(w,h) > 8:
-                        raise HTTPException(422, "Use an image of at least 32 pixels per side, at most 24 megapixels, and aspect ratio under 8:1")
-                    focal_35mm = focal_length_35mm(source)
-                    source.load()
-                    oriented = ImageOps.exif_transpose(source)
-                    rgba = oriented.convert("RGBA")
-                    clean = Image.new("RGBA", rgba.size, "white")
-                    clean.alpha_composite(rgba)
-                    clean = clean.convert("RGB")
-                    clean.thumbnail((2048,2048), Image.Resampling.LANCZOS)
-        except (UnidentifiedImageError, OSError, Image.DecompressionBombError, Image.DecompressionBombWarning):
-            raise HTTPException(415, "The image is invalid, damaged or too large")
-        return app.state.jobs.create(clean, image.filename or "image.png", {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "focal_35mm": focal_35mm})
+        uploads = list(images or [])
+        if image is not None:
+            uploads.insert(0, image)
+        if not uploads:
+            raise HTTPException(422, "Upload at least one image")
+        if len(uploads) > MAX_IMAGES:
+            raise HTTPException(422, "Upload at most four images")
+        if engine != "sharp" and len(uploads) > 1:
+            raise HTTPException(422, "Multiple labelled views are currently supported only with SHARP")
+        directions = list(views or [])
+        if len(uploads) == 1 and not directions:
+            directions = ["front"]
+        allowed_views = {"front", "right", "back", "left", "top", "bottom"}
+        if len(directions) != len(uploads) or any(v not in allowed_views for v in directions):
+            raise HTTPException(422, "Choose one valid direction for every uploaded image")
+        if len(set(directions)) != len(directions):
+            raise HTTPException(422, "Each uploaded image must use a different direction")
+
+        cleaned, names, focal_lengths = [], [], []
+        for upload_file in uploads:
+            payload = await upload_file.read(MAX_UPLOAD+1)
+            await upload_file.close()
+            if len(payload) > MAX_UPLOAD:
+                raise HTTPException(413, "Each image must be under 20 MB")
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", Image.DecompressionBombWarning)
+                    with Image.open(io.BytesIO(payload)) as source:
+                        if source.format not in ("JPEG", "PNG", "WEBP"):
+                            raise HTTPException(415, "Please use JPEG, PNG or WebP images")
+                        w, h = source.size
+                        if w*h > MAX_PIXELS or min(w,h) < 32 or max(w,h)/min(w,h) > 8:
+                            raise HTTPException(422, "Use images of at least 32 pixels per side, at most 24 megapixels, and aspect ratio under 8:1")
+                        focal_lengths.append(focal_length_35mm(source))
+                        source.load()
+                        oriented = ImageOps.exif_transpose(source)
+                        rgba = oriented.convert("RGBA")
+                        clean = Image.new("RGBA", rgba.size, "white")
+                        clean.alpha_composite(rgba)
+                        clean = clean.convert("RGB")
+                        clean.thumbnail((2048,2048), Image.Resampling.LANCZOS)
+                        cleaned.append(clean)
+                        names.append(upload_file.filename or "image.png")
+            except (UnidentifiedImageError, OSError, Image.DecompressionBombError, Image.DecompressionBombWarning):
+                raise HTTPException(415, "An uploaded image is invalid, damaged or too large")
+        inputs = [
+            {"file": "input.png" if i == 0 else f"input_{i}.png", "view": direction, "focal_35mm": focal_lengths[i]}
+            for i, direction in enumerate(directions)
+        ]
+        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "focal_35mm": focal_lengths[0]}
+        return app.state.jobs.create(cleaned, names, options)
 
     @app.get("/api/jobs")
     def history():
@@ -272,7 +311,7 @@ def create_app(data_dir=None):
 
     @app.get("/api/jobs/{job_id}/files/{filename}")
     def asset(job_id: str, filename: str):
-        allowed = {"scene.ply", "scene.gsb", "scene.json", "depth.png", "input.png", "thumbnail.jpg", "worker.log"}
+        allowed = {"scene.ply", "scene.gsb", "scene.json", "depth.png", "input.png", "input_1.png", "input_2.png", "input_3.png", "thumbnail.jpg", "worker.log"}
         if filename not in allowed:
             raise HTTPException(404, "File not found")
         folder = app.state.jobs.path(job_id)

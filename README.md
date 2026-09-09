@@ -1,14 +1,14 @@
 # Gaussian Scene Studio
 
 A local Windows app with a Python backend and an interactive Gaussian-splatting
-viewer. Upload JPEG, PNG or WebP, reconstruct, orbit/pan/zoom, export a real 3DGS
+viewer. Upload one to four JPEG, PNG or WebP images, reconstruct, orbit/pan/zoom, export a real 3DGS
 `.ply`, and save snapshots of the current view. No paid API or cloud inference.
 
-**Single-image limitation:** camera navigation works through 360 degrees, but a
-single photograph does not contain the true back or occluded sides. Neither
-included pipeline reconstructs a complete, reliable all-sides scene. Nearby
-viewpoints look best; use multiple real viewpoints for complete reconstruction.
-This is not a mesh generator, a multi-view 3DGS trainer, or a hidden-side generator.
+**Multi-view limitation:** SHARP is a single-image model. With two to four uploads,
+the app runs SHARP once per labelled view, normalizes and rotates the independent
+predictions, and fuses their Gaussians. This adds real side/back evidence, but it is
+not joint multi-view training: seams and conflicting predicted regions can remain.
+The depth path still accepts one image. This is not a mesh generator.
 
 ## Start on this computer
 
@@ -19,8 +19,9 @@ If that port is occupied it reserves the next free port and prints the address.
 Keep its terminal open; press Ctrl+C to stop the server and active inference.
 
 1. The initial blue sculpture is a **procedural renderer test**, not AI output.
-2. Upload a photo, select **Depth Anything V2 · lightweight**, leave Compute on
-   **Auto detect**, and choose **Create 3D scene**.
+2. Upload one photo for Depth Anything, or upload up to four photos and select
+   **Apple SHARP · 1–4 labelled views**. Label each photo's direction, leave Compute
+   on **Auto detect**, and choose **Create 3D scene**.
 3. Drag to orbit; right-drag or Shift-drag to pan; scroll to zoom. Arrow keys
    rotate, + / - zoom, R resets. Source / Left / Right / Back / Top are camera presets.
 4. **Export .ply** downloads every valid Gaussian. **Save image** saves the viewport.
@@ -81,10 +82,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA -In
 ```
 
 This also downloads the approximately 2.6 GB SHARP checkpoint. Then select
-**Apple SHARP · direct Gaussians** in the app and acknowledge its permitted use.
+**Apple SHARP · 1–4 labelled views** in the app and acknowledge its permitted use.
 The first model load may take time. CUDA inference uses mixed precision to
 reduce memory; covariance unprojection runs in float32 on CPU. The fixed 1536×1536
-model input is preserved. SHARP does not use the depth reconstruction detail slider.
+model input is preserved. Multiple views are inferred sequentially so peak model
+VRAM should remain close to a single prediction. SHARP does not use the depth
+reconstruction detail slider.
+
+For multi-view object capture, use two to four distinct labels from Front, Right,
+Back, Left, Top and Bottom. Keep the object upright, centred, similarly sized and
+similarly lit in every image. Front + Right + Back + Left is the recommended
+four-image set. The combined export is capped at two million Gaussians with equal
+sampling from each supplied view; the interactive preview remains capped at 1.5 million.
 
 No claim is made that SHARP always fits in 8 GB VRAM. A failed CUDA allocation
 produces an actionable error and does not silently substitute a different model.
@@ -100,7 +109,8 @@ establish CUDA inference correctness or runtime memory requirements.
 ```text
 Photograph -> Python/FastAPI -> isolated inference worker
   A: Depth Anything V2 Small -> relative inverse depth -> Gaussian lifting
-  B: Apple SHARP             -> pretrained Gaussian parameter prediction
+  B: Apple SHARP             -> 1–4 independent Gaussian predictions
+                             -> labelled rotation, scale/centre alignment and fusion
              -> 3DGS binary PLY + scene metadata + preview buffer
              -> local WebGL2 Gaussian projection + sorted alpha compositing
              -> mouse/keyboard-controlled 3D view
@@ -114,8 +124,10 @@ Photograph -> Python/FastAPI -> isolated inference worker
   multi-view optimization, and distance/scale is not metrically calibrated.
 - **SHARP path:** pinned official model code, weights-only checkpoint loading, fixed
   model resolution, official Gaussian unprojection, explicit OpenCV-to-viewer rotation
-  and linear-RGB-to-sRGB conversion. Focal length is estimated, so absolute scale may
-  differ from the original scene. No compilation-dependent gsplat rendering import.
+  and linear-RGB-to-sRGB conversion. Multi-view jobs reuse one loaded model and infer
+  each image sequentially, then robustly normalize, rotate and combine the results.
+  Focal length is estimated, so absolute scale may differ from the original scene.
+  No compilation-dependent gsplat rendering import.
 - **Renderer:** custom WebGL2 code in `static/renderer.js`. Computes
   `Sigma3 = R diag(s^2) R^T`, projects with `Sigma2 = J V Sigma3 V^T J^T + 0.3 I`,
   draws 3-sigma elliptical quads, evaluates `alpha = opacity * exp(-r^2/2)`, and
@@ -141,7 +153,7 @@ Photograph -> Python/FastAPI -> isolated inference worker
 | CUDA out of memory | Close GPU-heavy programs; use Depth Anything, or explicitly select SHARP CPU with adequate RAM. |
 | SHARP source or import error | Rerun `setup.ps1 -Device CUDA -IncludeSharp`; read the job log. |
 | Blank 3D viewport | Enable browser graphics acceleration, restart Chrome/Edge, click Source or Reset view. |
-| Holes/streaks at the back | Expected single-image limitation. Move nearer the source view; complete geometry needs multiple views. |
+| Holes/streaks or seams | Add labelled opposite-side photographs with consistent framing. SHARP predictions are fused geometrically, so conflicting predictions can still produce seams. |
 | Image has shallow depth | Try another photo with perspective, or adjust Depth amount in the depth model settings. |
 | App says disconnected | Keep the Python terminal running; restart Start Studio.cmd and reload its printed address. |
 

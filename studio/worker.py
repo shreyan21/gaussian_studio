@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 from studio.config import DEPTH_DIR, SHARP_SOURCE, SHARP_WEIGHTS
-from studio.gaussians import export_scene, from_depth
+from studio.gaussians import export_scene, from_depth, fuse_gaussian_views
 
 
 def progress(directory, percent, message):
@@ -50,9 +50,8 @@ def depth_predict(image, directory, options, device):
     return g, {**camera, "engine": "Depth Anything V2 Small + Gaussian lifting", "method": "depth", "limitation": "Relative-depth reconstruction of visible surfaces. Hidden sides are not generated; scale is not metric.", "licence": "Apache-2.0 model", "device": device}
 
 
-def sharp_predict(image, directory, options, device):
+def load_sharp_predictor(directory, device):
     import torch
-    import torch.nn.functional as F
     import psutil
     if not SHARP_WEIGHTS.is_file() or not (SHARP_SOURCE / "sharp" / "models" / "__init__.py").is_file():
         raise RuntimeError("SHARP is not installed. Run setup.ps1 -Device CUDA -IncludeSharp, then retry.")
@@ -60,8 +59,7 @@ def sharp_predict(image, directory, options, device):
         raise RuntimeError("SHARP CPU mode is disabled on computers with less than 14 GB RAM to avoid exhausting memory. Use the lightweight depth model here, or SHARP on your workstation.")
     sys.path.insert(0, str(SHARP_SOURCE))
     from sharp.models import PredictorParams, create_predictor
-    from sharp.utils.gaussians import Gaussians3D, unproject_gaussians
-    progress(directory, 15, "Loading SHARP pretrained weights on " + device.upper())
+    progress(directory, 12, "Loading SHARP pretrained weights on " + device.upper())
     state = torch.load(str(SHARP_WEIGHTS), map_location="cpu", weights_only=True, mmap=True)
     # Allocate model structure without a second 2.6 GB initialized parameter copy.
     # assign=True adopts checkpoint tensors, then .to(device) materializes CUDA data.
@@ -70,6 +68,16 @@ def sharp_predict(image, directory, options, device):
     predictor.load_state_dict(state, strict=True, assign=True)
     del state
     predictor.eval().to(device)
+    return predictor
+
+
+def sharp_predict(image, directory, options, device, predictor=None, progress_values=(15, 40, 70), label="image"):
+    import torch
+    import torch.nn.functional as F
+    from sharp.utils.gaussians import Gaussians3D, unproject_gaussians
+    owns_predictor = predictor is None
+    if predictor is None:
+        predictor = load_sharp_predictor(directory, device)
     width, height = image.size
     # SHARP's fixed internal resolution must not be changed to claim VRAM savings.
     # Match SHARP's official 30 mm full-frame fallback when upload EXIF is absent.
@@ -78,16 +86,18 @@ def sharp_predict(image, directory, options, device):
     input_tensor = torch.from_numpy(np.asarray(image).copy()).to(device).float().permute(2, 0, 1)[None] / 255
     input_tensor = F.interpolate(input_tensor, (1536, 1536), mode="bilinear", align_corners=True)
     factor = torch.tensor([focal / width], dtype=torch.float32, device=device)
-    progress(directory, 40, "Predicting 3D Gaussian positions, scales, rotations, colours and opacity")
+    progress(directory, progress_values[1], f"Predicting Gaussians from {label}")
     # Autocast reduces activation memory on 8 GB GPUs; SVD/unprojection stays float32 on CPU.
     with torch.inference_mode(), torch.autocast(device_type=device, dtype=torch.float16, enabled=device == "cuda"):
         raw = predictor(input_tensor, factor)
     raw = Gaussians3D(*(t.detach().float().cpu() for t in raw))
-    del predictor, input_tensor, factor
+    del input_tensor, factor
+    if owns_predictor:
+        del predictor
     gc.collect()
     if device == "cuda":
         torch.cuda.empty_cache()
-    progress(directory, 70, "Unprojecting Gaussian covariance into 3D camera coordinates")
+    progress(directory, progress_values[2], f"Unprojecting and aligning {label}")
     k = torch.tensor([[focal,0,width/2,0],[0,focal,height/2,0],[0,0,1,0],[0,0,0,1]], dtype=torch.float32)
     k[0] *= 1536/width
     k[1] *= 1536/height
@@ -115,13 +125,55 @@ def main():
         import torch
         torch.set_num_threads(min(4, os.cpu_count() or 1))
         device = choose_device(options["device"])
-        with Image.open(directory / "input.png") as source:
-            image = source.convert("RGB")
-        fn = sharp_predict if options["engine"] == "sharp" else depth_predict
         try:
-            g, meta = fn(image, directory, options, device)
+            inputs = options.get("inputs") or [{"file": "input.png", "view": "front", "focal_35mm": options.get("focal_35mm", 30.0)}]
+            if options["engine"] == "sharp":
+                predictor = load_sharp_predictor(directory, device)
+                predicted = []
+                first_meta = None
+                count = len(inputs)
+                for index, spec in enumerate(inputs):
+                    start = 15 + round(index * 68 / count)
+                    end = 15 + round((index + 1) * 68 / count)
+                    middle = start + max(1, (end-start) // 2)
+                    with Image.open(directory / spec["file"]) as source:
+                        image = source.convert("RGB")
+                    per_view_options = {**options, "focal_35mm": spec.get("focal_35mm", 30.0)}
+                    label = f"{spec['view']} view ({index+1}/{count})"
+                    one, one_meta = sharp_predict(image, directory, per_view_options, device, predictor, (start, middle, end), label)
+                    predicted.append((one, spec["view"]))
+                    first_meta = first_meta or one_meta
+                del predictor
+                gc.collect()
+                if device == "cuda":
+                    torch.cuda.empty_cache()
+                if count > 1:
+                    progress(directory, 85, f"Fusing {count} labelled SHARP predictions")
+                    g = fuse_gaussian_views(predicted)
+                else:
+                    g = predicted[0][0]
+                meta = {
+                    **first_meta,
+                    "engine": "Apple SHARP multi-view fusion",
+                    "method": "sharp-multiview" if count > 1 else "sharp",
+                    "input_views": [spec["view"] for spec in inputs],
+                    "input_count": count,
+                    "limitation": (
+                        "Geometric fusion of independent SHARP predictions aligned from labelled views. "
+                        "SHARP does not jointly condition on multiple images, so unobserved areas are predictions and seams may remain."
+                        if count > 1 else first_meta["limitation"]
+                    ),
+                }
+            else:
+                with Image.open(directory / inputs[0]["file"]) as source:
+                    image = source.convert("RGB")
+                g, meta = depth_predict(image, directory, options, device)
         except torch.cuda.OutOfMemoryError as exc:
-            raise RuntimeError("The selected model ran out of GPU memory. Close GPU-heavy programs. For an 8 GB card use Depth Anything V2 Small, or explicitly choose CPU for SHARP on a machine with sufficient RAM. No output was substituted.") from exc
+            if options["engine"] == "sharp":
+                message = "SHARP ran out of GPU memory. Close GPU-heavy programs and retry; multi-view images are processed one at a time, so adding views should not increase peak model VRAM. No output was substituted."
+            else:
+                message = "The depth model ran out of GPU memory. Close GPU-heavy programs, reduce Detail, or select CPU. No output was substituted."
+            raise RuntimeError(message) from exc
         progress(directory, 88, "Writing Gaussian PLY and preparing the interactive scene")
         meta["seconds"] = round(time.monotonic()-started,2)
         export_scene(directory, g, meta)

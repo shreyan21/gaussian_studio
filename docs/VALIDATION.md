@@ -1,4 +1,4 @@
-# Validation record — 8 September 2026
+# Validation record — 9 September 2026
 
 ## Verified on this computer
 
@@ -8,9 +8,10 @@
 - Corrected PowerShell installer completed successfully from the D-drive folder;
   `pip check` reported no broken requirements. All resolved Python dependency
   versions are constrained by `constraints-windows-py311.txt`.
-- **18 tests passed** from the D-drive installation. Coverage: Gaussian PLY
+- **23 tests passed, 1 optional SHARP test skipped** from the current installation. Coverage: Gaussian PLY
   round-trip, perspective/depth direction, anisotropy, finite outputs, preview/full
-  export separation, valid/invalid uploads, research flag, cross-origin writes,
+  export separation, labelled-view rotation/fusion, one-to-four image storage,
+  duplicate-direction rejection, valid/invalid uploads, research flag, cross-origin writes,
   streamed upload size, single active job, real process cancellation, failed CUDA
   worker reporting, stale-job recovery, and upstream SHARP covariance conversion.
 - Test output has two dependency deprecation warnings from Starlette's HTTPX
@@ -59,13 +60,15 @@ remain unverified. An 8 GB A1000 is the target workstation, not a tested guarant
    tensor computation and identifies the RTX A1000.
 2. Generate a lightweight-model scene with Auto compute. Scene metadata must say
    `cuda`, and the PLY download must load in the interactive viewer.
-3. For permitted research, install/enable SHARP, run a clear normal photograph and
-   inspect source/nearby views and Gaussian metadata. Record time and memory use.
-4. Check cancel/retry and a second image. Close other GPU-heavy programs if memory
+3. For permitted research, install/enable SHARP, run Front + Right + Back + Left
+   photographs with consistent object framing, then inspect all presets, seams and
+   Gaussian metadata. Record time and peak memory use.
+4. Check cancel/retry and a second job. Close other GPU-heavy programs if memory
    is insufficient; explicitly choose the lightweight model or SHARP CPU with
    adequate system RAM if needed.
-5. Review the hidden-side limitation with the senior: 360-degree camera control
-   does not mean unseen geometry has been accurately reconstructed.
+5. Review the limitation with the senior: the implementation fuses separately
+   inferred and labelled SHARP scenes; it does not make SHARP a jointly conditioned
+   multi-view model, and unseen geometry is not guaranteed accurate.
 
 No application can honestly be guaranteed bug-free across untested machines.
 This record distinguishes executed checks from workstation checks still required.

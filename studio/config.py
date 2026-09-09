@@ -13,6 +13,7 @@ SHARP_SHA256 = "94211a75198c47f61fca7d739ba08a215418d8d398d48fddf023baccc24f073d
 SHARP_WEIGHTS = MODELS / "sharp_2572gikvuh.pt"
 DEPTH_DIR = MODELS / "depth-anything-v2-small"
 MAX_UPLOAD = 20 * 1024 * 1024
+MAX_IMAGES = 4
 MAX_PIXELS = 24_000_000
 
 # Keep model caches with the app, never upload user images to a model service.

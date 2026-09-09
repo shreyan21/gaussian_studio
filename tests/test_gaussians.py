@@ -5,7 +5,7 @@ import pytest
 from PIL import Image
 from plyfile import PlyData
 
-from studio.gaussians import export_scene, from_depth, make_demo, read_ply, validate, write_ply
+from studio.gaussians import align_gaussian_view, export_scene, from_depth, fuse_gaussian_views, make_demo, read_ply, validate, write_ply
 
 
 def test_ply_preserves_real_gaussian_parameters(tmp_path):
@@ -65,3 +65,21 @@ def test_sanitizing_removes_nonfinite_and_transparent_splats():
     g[1,3] = 0
     g[2,4] = -1
     assert len(validate(g)) == 7
+
+
+def test_labelled_views_rotate_positions_and_quaternions():
+    g = np.zeros((3,16), np.float32)
+    g[:,:3] = [[-1,0,0], [0,0,0], [1,0,0]]
+    g[:,3], g[:,4:7], g[:,8] = .8, .1, 1
+    right = align_gaussian_view(g, 'right')
+    np.testing.assert_allclose(right[:,0], 0, atol=1e-6)
+    assert right[0,2] > right[2,2]
+    np.testing.assert_allclose(right[:,8:12], [[np.sqrt(.5),0,np.sqrt(.5),0]]*3, atol=1e-6)
+
+
+def test_multiview_fusion_preserves_equal_view_coverage():
+    a, b = make_demo()[:20], make_demo()[20:40]
+    fused = fuse_gaussian_views([(a, 'front'), (b, 'back')], max_gaussians=10)
+    assert fused.shape == (10,16)
+    assert np.isfinite(fused).all()
+    np.testing.assert_allclose(np.linalg.norm(fused[:,8:12],axis=1), 1, atol=1e-6)

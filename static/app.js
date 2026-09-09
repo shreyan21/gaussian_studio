@@ -1,6 +1,7 @@
 import {GaussianViewer} from './renderer.js';
 const $=id=>document.getElementById(id);
-let viewer,selectedFile=null,previewURL=null,activeJob=null,currentScene=null,health=null,sceneRequest=0,pollTimer=null;
+let viewer,selectedFiles=[],previewURLs=[],activeJob=null,currentScene=null,health=null,sceneRequest=0,pollTimer=null;
+const viewNames=['front','right','back','left','top','bottom'];
 const number=n=>new Intl.NumberFormat().format(n);
 function showError(message,jobId=null){$('errorText').textContent=message;$('errorPanel').hidden=false;$('logLink').hidden=!jobId;if(jobId)$('logLink').href=`/api/jobs/${jobId}/files/worker.log`;}
 function clearError(){$('errorPanel').hidden=true;}
@@ -11,25 +12,47 @@ async function request(url,options={}){
 }
 function setBusy(busy){
  for(const id of ['imageInput','engine','device','resolution','depthStrength','researchUse'])$(id).disabled=busy;
+ document.querySelectorAll('.view-direction').forEach(select=>select.disabled=busy);
  $('depthStrength').disabled=busy||$('engine').value==='sharp';
- $('generateBtn').disabled=busy||!selectedFile;$('generateBtn').textContent=busy?'Reconstructing…':'Create 3D scene ↗';$('progressPanel').hidden=!busy;$('cancelBtn').disabled=false;
+ $('generateBtn').disabled=busy||!selectedFiles.length;$('generateBtn').textContent=busy?'Reconstructing…':'Create 3D scene ↗';$('progressPanel').hidden=!busy;$('cancelBtn').disabled=false;
 }
-function chooseFile(file){
- if(activeJob)return;clearError();selectedFile=null;
- if(previewURL){URL.revokeObjectURL(previewURL);previewURL=null;}
- $('imagePreview').hidden=true;$('uploadPrompt').hidden=false;$('generateBtn').disabled=true;
- if(!file)return;
- if(!['image/jpeg','image/png','image/webp'].includes(file.type)){showError('Choose a JPEG, PNG or WebP photograph.');return;}
- if(file.size>20*1024*1024){showError('The image is over 20 MB. Save a smaller copy and try again.');return;}
- selectedFile=file;previewURL=URL.createObjectURL(file);$('imagePreview').src=previewURL;$('imagePreview').hidden=false;$('uploadPrompt').hidden=true;$('filename').textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MB`;$('generateBtn').disabled=false;
+function renderPreviews(){
+ const container=$('imagePreviews');container.replaceChildren();container.hidden=!selectedFiles.length;$('uploadPrompt').hidden=!!selectedFiles.length;
+ selectedFiles.forEach((item,index)=>{
+  const card=document.createElement('div');card.className='image-card';
+  const img=document.createElement('img');img.src=item.url;img.alt=`${item.direction} source view`;
+  const select=document.createElement('select');select.className='view-direction';select.setAttribute('aria-label',`Direction for ${item.file.name}`);
+  for(const name of viewNames){const option=document.createElement('option');option.value=name;option.textContent=name[0].toUpperCase()+name.slice(1);option.selected=name===item.direction;select.append(option);}
+  select.addEventListener('change',()=>{item.direction=select.value;clearError();});
+  const remove=document.createElement('button');remove.type='button';remove.className='remove-image';remove.textContent='×';remove.setAttribute('aria-label',`Remove ${item.file.name}`);
+  remove.addEventListener('click',event=>{event.stopPropagation();URL.revokeObjectURL(item.url);selectedFiles.splice(index,1);renderPreviews();updateSelection();});
+  card.append(img,select,remove);container.append(card);
+ });
 }
-$('imageInput').addEventListener('change',e=>chooseFile(e.target.files[0]));
+function updateSelection(){
+ const total=selectedFiles.reduce((sum,item)=>sum+item.file.size,0);
+ $('filename').textContent=selectedFiles.length?`${selectedFiles.length} view${selectedFiles.length===1?'':'s'} selected · ${(total/1024/1024).toFixed(2)} MB total`:'Keep the object centred, then label every camera direction.';
+ $('generateBtn').disabled=!selectedFiles.length;
+}
+function chooseFiles(files){
+ if(activeJob)return;clearError();const incoming=[...files];
+ if(incoming.length>4){showError('Choose at most four photographs.');return;}
+ for(const file of incoming){
+  if(!['image/jpeg','image/png','image/webp'].includes(file.type)){showError('Choose only JPEG, PNG or WebP photographs.');return;}
+  if(file.size>20*1024*1024){showError(`${file.name} is over 20 MB. Save a smaller copy and try again.`);return;}
+ }
+ previewURLs.forEach(url=>URL.revokeObjectURL(url));
+ previewURLs=incoming.map(file=>URL.createObjectURL(file));
+ selectedFiles=incoming.map((file,index)=>({file,url:previewURLs[index],direction:viewNames[index]}));
+ renderPreviews();updateSelection();
+}
+$('imageInput').addEventListener('change',e=>chooseFiles(e.target.files));
 for(const type of ['dragenter','dragover'])$('dropZone').addEventListener(type,e=>{e.preventDefault();$('dropZone').classList.add('drag-over');});
 for(const type of ['dragleave','drop'])$('dropZone').addEventListener(type,e=>{e.preventDefault();$('dropZone').classList.remove('drag-over');});
-$('dropZone').addEventListener('drop',e=>chooseFile(e.dataTransfer.files[0]));
+$('dropZone').addEventListener('drop',e=>chooseFiles(e.dataTransfer.files));
 $('engine').addEventListener('change',()=>{
  const sharp=$('engine').value==='sharp';$('researchRow').hidden=!sharp;$('qualityField').hidden=sharp;$('depthStrength').disabled=sharp;
- $('engineDescription').textContent=sharp?'Directly predicts 3D Gaussians. Higher memory use; nearby viewpoints look best. Research use only.':'Predicts depth, then builds 3D Gaussian surfaces. Works on CPU and CUDA.';
+ $('engineDescription').textContent=sharp?'Predicts each labelled view sequentially, then aligns and fuses the Gaussians. Research use only.':'Predicts depth from one image, then builds a visible Gaussian surface.';
 });
 $('depthStrength').addEventListener('input',()=>{$('depthValue').textContent=Number($('depthStrength').value).toFixed(2)+'×';});
 
@@ -41,8 +64,9 @@ async function loadScene(id=null){
   const meta=await metaResponse.json(),buffer=await sceneResponse.arrayBuffer();if(token!==sceneRequest)return;
   viewer.load(buffer,meta);currentScene=id;
   $('sceneTitle').textContent=id?'Reconstructed scene':'Renderer calibration';
-  $('sceneBadge').textContent=meta.method==='demo'?'SYNTHETIC DEMO':meta.method==='sharp'?'SHARP · RESEARCH':'DEPTH RECONSTRUCTION';
-  $('engineStat').textContent=meta.method==='demo'?'Procedural demo':meta.method==='sharp'?'Apple SHARP':'Depth Anything V2 Small';
+  const isSharp=meta.method?.startsWith('sharp');
+  $('sceneBadge').textContent=meta.method==='demo'?'SYNTHETIC DEMO':isSharp?(meta.input_count>1?'SHARP · MULTI-VIEW':'SHARP · RESEARCH'):'DEPTH RECONSTRUCTION';
+  $('engineStat').textContent=meta.method==='demo'?'Procedural demo':isSharp?(meta.input_count>1?`Apple SHARP · ${meta.input_count} views`:'Apple SHARP'):'Depth Anything V2 Small';
   $('timeStat').textContent=meta.seconds?`${meta.seconds.toFixed(1)} s · ${meta.device.toUpperCase()}`:'—';
   $('splatCount').textContent=number(meta.preview_gaussians);
   $('splatCount').title=`${number(meta.gaussians)} Gaussians in the full PLY export`;
@@ -80,11 +104,13 @@ async function refreshHistory(){
 }
 
 $('createForm').addEventListener('submit',async e=>{
- e.preventDefault();if(!selectedFile||activeJob)return;clearError();const engine=$('engine').value;
+ e.preventDefault();if(!selectedFiles.length||activeJob)return;clearError();const engine=$('engine').value;
+ if(engine!=='sharp'&&selectedFiles.length>1){showError('Multiple images require Apple SHARP. Choose SHARP or upload one image for Depth Anything.');return;}
+ if(new Set(selectedFiles.map(item=>item.direction)).size!==selectedFiles.length){showError('Choose a different direction for every photograph.');return;}
  if(engine==='sharp'&&!$('researchUse').checked){showError('SHARP’s model licence requires non-commercial scientific research. Confirm the checkbox if that describes your use, or choose Depth Anything.');return;}
  if(health&&!health.models[engine]){showError(engine==='sharp'?'SHARP is not installed. Run setup.ps1 -Device CUDA -IncludeSharp from the app folder, then click refresh.':'Download the depth model first: run .venv\\Scripts\\python.exe scripts\\download_models.py --model depth from the app folder, then click refresh.');return;}
  if($('device').value==='cuda'&&health?.hardware.status!=='checking'&&!health?.hardware.cuda){showError('CUDA is not available in this Python environment. Select CPU or Auto here. On your workstation, run setup.ps1 -Device CUDA.');return;}
- const data=new FormData();data.append('image',selectedFile);data.append('engine',engine);data.append('device',$('device').value);data.append('resolution',$('resolution').value);data.append('depth_strength',$('depthStrength').value);data.append('research_use',$('researchUse').checked);
+ const data=new FormData();for(const item of selectedFiles){data.append('images',item.file,item.file.name);data.append('views',item.direction);}data.append('engine',engine);data.append('device',$('device').value);data.append('resolution',$('resolution').value);data.append('depth_strength',$('depthStrength').value);data.append('research_use',$('researchUse').checked);
  setBusy(true);$('progressBar').value=0;$('progressPercent').textContent='0%';$('progressMessage').textContent='Uploading to your local Python server…';
  try{const job=await (await request('/api/jobs',{method:'POST',body:data})).json();activeJob=job.id;await refreshHistory();pollJob();}
  catch(error){showError(error.message);setBusy(false);}

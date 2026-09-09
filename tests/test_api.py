@@ -58,7 +58,7 @@ def test_cross_origin_and_invalid_paths_blocked(client):
 
 def test_streamed_oversized_upload_rejected_before_parsing(client):
     def body():
-        for _ in range(23):
+        for _ in range(83):
             yield b'x'*(1024*1024)
     assert client.post('/api/jobs',content=body(),headers={'content-type':'multipart/form-data; boundary=test'}).status_code == 413
 
@@ -86,6 +86,37 @@ def test_upload_canonicalized_and_single_job_enforced(client,monkeypatch):
     assert client.get(f"/api/jobs/{job['id']}/files/scene.ply").status_code == 409
     assert client.get(f"/api/jobs/{job['id']}/files/request.json").status_code == 404
     assert client.post(f"/api/jobs/{job['id']}/cancel").json()['status'] == 'cancelled'
+
+
+def test_four_labelled_sharp_views_are_saved_for_worker(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(Jobs, 'run', lambda *args: None)
+    files = [
+        ('images', (f'{view}.png', photo(), 'image/png'))
+        for view in ('front', 'right', 'back', 'left')
+    ]
+    response = client.post('/api/jobs', files=files, data={
+        'engine': 'sharp',
+        'research_use': 'true',
+        'views': ['front', 'right', 'back', 'left'],
+    })
+    assert response.status_code == 202
+    job = response.json()
+    folder = tmp_path / 'jobs' / job['id']
+    assert job['image_count'] == 4
+    assert job['name'] == 'front.png + 3 views'
+    assert all((folder / name).is_file() for name in ('input.png', 'input_1.png', 'input_2.png', 'input_3.png'))
+    request = json.loads((folder / 'request.json').read_text())
+    assert [item['view'] for item in request['inputs']] == ['front', 'right', 'back', 'left']
+
+
+def test_multiview_rejects_duplicate_labels_and_depth_engine(client):
+    files = [('images', ('a.png', photo(), 'image/png')), ('images', ('b.png', photo(), 'image/png'))]
+    duplicate = client.post('/api/jobs', files=files, data={
+        'engine': 'sharp', 'research_use': 'true', 'views': ['front', 'front'],
+    })
+    assert duplicate.status_code == 422
+    depth = client.post('/api/jobs', files=files, data={'engine': 'depth', 'views': ['front', 'back']})
+    assert depth.status_code == 422
 
 
 def test_stale_running_jobs_recovered(tmp_path):
