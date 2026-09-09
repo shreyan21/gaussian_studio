@@ -121,7 +121,7 @@ Photograph -> Python/FastAPI -> isolated inference worker
   draws 3-sigma elliptical quads, evaluates `alpha = opacity * exp(-r^2/2)`, and
   composites in back-to-front order. A worker performs 16-bit depth-bin sorting.
   This is real anisotropic Gaussian rasterization, not a point cloud or textured plane.
-- **Preview budget:** at most 260,000 Gaussians. Larger scenes use deterministic
+- **Preview budget:** at most 1,500,000 Gaussians. Larger scenes use deterministic
   uniform sampling and enlarged tangential footprints; full PLY retains all valid
   Gaussians. The UI reports preview and full counts. Preview appearance is approximate.
 - **Format:** binary little-endian PLY, SH degree 0 colour, log-scale, logit-opacity,

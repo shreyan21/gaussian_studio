@@ -7,12 +7,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from studio.config import DEPTH_DIR, SHARP_WEIGHTS
+from studio.config import DEPTH_DIR, SHARP_SOURCE, SHARP_WEIGHTS
 
 
 def check():
     import psutil
-    result = {"status": "ready", "python": platform.python_version(), "executable": sys.executable, "platform": platform.platform(), "ram_gb": round(psutil.virtual_memory().total/1024**3,1), "available_ram_gb": round(psutil.virtual_memory().available/1024**3,1), "cuda": False, "depth_model": (DEPTH_DIR / "model.safetensors").exists(), "sharp_model": SHARP_WEIGHTS.exists()}
+    sharp_source = SHARP_SOURCE / "sharp" / "models" / "__init__.py"
+    result = {"status": "ready", "python": platform.python_version(), "executable": sys.executable, "platform": platform.platform(), "ram_gb": round(psutil.virtual_memory().total/1024**3,1), "available_ram_gb": round(psutil.virtual_memory().available/1024**3,1), "cuda": False, "depth_model": (DEPTH_DIR / "model.safetensors").exists(), "sharp_model": SHARP_WEIGHTS.is_file() and sharp_source.is_file(), "sharp_weights": SHARP_WEIGHTS.is_file(), "sharp_source": sharp_source.is_file()}
     try:
         import torch
         result.update(torch=torch.__version__, torch_cuda_runtime=torch.version.cuda, cuda=torch.cuda.is_available())

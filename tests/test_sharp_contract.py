@@ -9,7 +9,7 @@ import pytest
 from studio.config import SHARP_SOURCE
 
 
-@pytest.mark.skipif(not (SHARP_SOURCE / "sharp/models").exists(), reason="Optional SHARP source not installed")
+@pytest.mark.skipif(not (SHARP_SOURCE / "sharp" / "models" / "__init__.py").is_file(), reason="Optional SHARP source not installed")
 def test_upstream_unprojection_and_viewer_quaternion_convention():
     import torch
     sys.path.insert(0,str(SHARP_SOURCE))

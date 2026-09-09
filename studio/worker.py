@@ -54,7 +54,7 @@ def sharp_predict(image, directory, options, device):
     import torch
     import torch.nn.functional as F
     import psutil
-    if not SHARP_WEIGHTS.is_file() or not (SHARP_SOURCE / "sharp" / "models").is_dir():
+    if not SHARP_WEIGHTS.is_file() or not (SHARP_SOURCE / "sharp" / "models" / "__init__.py").is_file():
         raise RuntimeError("SHARP is not installed. Run setup.ps1 -Device CUDA -IncludeSharp, then retry.")
     if device == "cpu" and psutil.virtual_memory().total < 14 * 1024**3:
         raise RuntimeError("SHARP CPU mode is disabled on computers with less than 14 GB RAM to avoid exhausting memory. Use the lightweight depth model here, or SHARP on your workstation.")
@@ -72,7 +72,9 @@ def sharp_predict(image, directory, options, device):
     predictor.eval().to(device)
     width, height = image.size
     # SHARP's fixed internal resolution must not be changed to claim VRAM savings.
-    focal = max(width, height) * 0.85
+    # Match SHARP's official 30 mm full-frame fallback when upload EXIF is absent.
+    focal_35mm = options.get("focal_35mm") or 30.0
+    focal = focal_35mm * np.hypot(width, height) / np.hypot(36, 24)
     input_tensor = torch.from_numpy(np.asarray(image).copy()).to(device).float().permute(2, 0, 1)[None] / 255
     input_tensor = F.interpolate(input_tensor, (1536, 1536), mode="bilinear", align_corners=True)
     factor = torch.tensor([focal / width], dtype=torch.float32, device=device)

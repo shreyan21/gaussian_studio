@@ -25,6 +25,26 @@ from studio.gaussians import export_scene, make_demo
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
 
+def focal_length_35mm(image):
+    """Read SHARP's preferred full-frame focal length, with its official fallback."""
+    exif = image.getexif()
+    value = exif.get(41989)  # FocalLengthIn35mmFilm
+    try:
+        value = float(value)
+    except (TypeError, ValueError, ZeroDivisionError):
+        value = 0.0
+    if value >= 1:
+        return value
+    value = exif.get(37386)  # FocalLength
+    try:
+        value = float(value)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return 30.0
+    if value < 1:
+        return 30.0
+    return value * 8.4 if value < 10 else value
+
+
 def atomic_json(path, value):
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(value, indent=2), encoding="utf-8")
@@ -201,7 +221,8 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        return {"app": "Gaussian Scene Studio", "version": "1.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "models": {"depth": (DEPTH_DIR / "model.safetensors").is_file(), "sharp": SHARP_WEIGHTS.is_file() and (SHARP_SOURCE / "sharp/models").is_dir()}, "active_job": app.state.jobs.active}
+        sharp_source = SHARP_SOURCE / "sharp" / "models" / "__init__.py"
+        return {"app": "Gaussian Scene Studio", "version": "1.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "models": {"depth": (DEPTH_DIR / "model.safetensors").is_file(), "sharp": SHARP_WEIGHTS.is_file() and sharp_source.is_file()}, "active_job": app.state.jobs.active}
 
     @app.post("/api/jobs", status_code=202)
     async def upload(image: UploadFile = File(...), engine: str = Form("depth"), device: str = Form("auto"), resolution: int = Form(512), depth_strength: float = Form(1.0), research_use: bool = Form(False)):
@@ -224,6 +245,7 @@ def create_app(data_dir=None):
                     w, h = source.size
                     if w*h > MAX_PIXELS or min(w,h) < 32 or max(w,h)/min(w,h) > 8:
                         raise HTTPException(422, "Use an image of at least 32 pixels per side, at most 24 megapixels, and aspect ratio under 8:1")
+                    focal_35mm = focal_length_35mm(source)
                     source.load()
                     oriented = ImageOps.exif_transpose(source)
                     rgba = oriented.convert("RGBA")
@@ -233,7 +255,7 @@ def create_app(data_dir=None):
                     clean.thumbnail((2048,2048), Image.Resampling.LANCZOS)
         except (UnidentifiedImageError, OSError, Image.DecompressionBombError, Image.DecompressionBombWarning):
             raise HTTPException(415, "The image is invalid, damaged or too large")
-        return app.state.jobs.create(clean, image.filename or "image.png", {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength})
+        return app.state.jobs.create(clean, image.filename or "image.png", {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "focal_35mm": focal_35mm})
 
     @app.get("/api/jobs")
     def history():

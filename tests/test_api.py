@@ -6,13 +6,20 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from studio.server import Jobs, atomic_json, create_app
+from studio.server import Jobs, atomic_json, create_app, focal_length_35mm
 
 
 def photo(size=(64,48)):
     stream=io.BytesIO()
     Image.new("RGB",size,"coral").save(stream,format="PNG")
     return stream.getvalue()
+
+
+def test_sharp_focal_length_uses_exif_and_official_fallback():
+    image = Image.new("RGB", (64, 48))
+    assert focal_length_35mm(image) == 30.0
+    image.getexif()[41989] = 50
+    assert focal_length_35mm(image) == 50.0
 
 
 @pytest.fixture

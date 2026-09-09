@@ -96,7 +96,7 @@ def read_ply(path):
     return validate(g)
 
 
-def export_scene(directory: Path, g, metadata, preview_limit=260000):
+def export_scene(directory: Path, g, metadata, preview_limit=1_500_000):
     g = validate(g)
     write_ply(directory / "scene.ply", g)
     # Spatially unbiased deterministic preview; full PLY retains every valid Gaussian.
