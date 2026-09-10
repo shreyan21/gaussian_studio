@@ -19,30 +19,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from studio.config import DATA, DEPTH_DIR, MAX_IMAGES, MAX_PIXELS, MAX_UPLOAD, ROOT, SHARP_SOURCE, SHARP_WEIGHTS
+from studio.anysplat_runtime import model_ready as anysplat_model_ready
+from studio.config import DATA, DEPTH_DIR, MAX_IMAGES, MAX_PIXELS, MAX_UPLOAD, ROOT
 from studio.gaussians import export_scene, make_demo
 
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
-
-
-def focal_length_35mm(image):
-    """Read SHARP's preferred full-frame focal length, with its official fallback."""
-    exif = image.getexif()
-    value = exif.get(41989)  # FocalLengthIn35mmFilm
-    try:
-        value = float(value)
-    except (TypeError, ValueError, ZeroDivisionError):
-        value = 0.0
-    if value >= 1:
-        return value
-    value = exif.get(37386)  # FocalLength
-    try:
-        value = float(value)
-    except (TypeError, ValueError, ZeroDivisionError):
-        return 30.0
-    if value < 1:
-        return 30.0
-    return value * 8.4 if value < 10 else value
 
 
 def atomic_json(path, value):
@@ -215,7 +196,7 @@ def create_app(data_dir=None):
                 async for chunk in request.stream():
                     raw.extend(chunk)
                     if len(raw) > MAX_UPLOAD * MAX_IMAGES + 1024*1024:
-                        return JSONResponse({"detail": "Each image must be under 20 MB and at most four images may be uploaded"}, status_code=413)
+                        return JSONResponse({"detail": f"Each image must be under 20 MB and at most {MAX_IMAGES} images may be uploaded"}, status_code=413)
                 request._body = bytes(raw)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -224,45 +205,39 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        sharp_source = SHARP_SOURCE / "sharp" / "models" / "__init__.py"
-        return {"app": "Gaussian Scene Studio", "version": "1.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "models": {"depth": (DEPTH_DIR / "model.safetensors").is_file(), "sharp": SHARP_WEIGHTS.is_file() and sharp_source.is_file()}, "active_job": app.state.jobs.active}
+        return {"app": "Gaussian Scene Studio", "version": "2.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "models": {"depth": (DEPTH_DIR / "model.safetensors").is_file(), "anysplat": anysplat_model_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES}
 
     @app.post("/api/jobs", status_code=202)
     async def upload(
         images: list[UploadFile] | None = File(None),
         image: UploadFile | None = File(None),
-        views: list[str] | None = Form(None),
         engine: str = Form("depth"),
         device: str = Form("auto"),
         resolution: int = Form(512),
         depth_strength: float = Form(1.0),
-        research_use: bool = Form(False),
+        view_limit: str = Form("auto"),
     ):
-        if engine not in ("depth", "sharp") or device not in ("auto", "cpu", "cuda"):
+        if engine not in ("depth", "anysplat") or device not in ("auto", "cpu", "cuda"):
             raise HTTPException(422, "Invalid model or device")
         if resolution not in (384, 512, 768) or not 0.25 <= depth_strength <= 1.5:
             raise HTTPException(422, "Invalid quality or depth range")
-        if engine == "sharp" and not research_use:
-            raise HTTPException(422, "SHARP weights are limited to non-commercial scientific research. Confirm your permitted use or choose Depth Anything V2 Small.")
+        if view_limit not in ("auto", "all", "2", "4", "6", "8", "10", "12", "16"):
+            raise HTTPException(422, "Invalid AnySplat view budget")
+        if engine == "anysplat" and device == "cpu":
+            raise HTTPException(422, "AnySplat requires NVIDIA CUDA; choose Auto or NVIDIA CUDA")
         uploads = list(images or [])
         if image is not None:
             uploads.insert(0, image)
         if not uploads:
             raise HTTPException(422, "Upload at least one image")
         if len(uploads) > MAX_IMAGES:
-            raise HTTPException(422, "Upload at most four images")
-        if engine != "sharp" and len(uploads) > 1:
-            raise HTTPException(422, "Multiple labelled views are currently supported only with SHARP")
-        directions = list(views or [])
-        if len(uploads) == 1 and not directions:
-            directions = ["front"]
-        allowed_views = {"front", "right", "back", "left", "top", "bottom"}
-        if len(directions) != len(uploads) or any(v not in allowed_views for v in directions):
-            raise HTTPException(422, "Choose one valid direction for every uploaded image")
-        if len(set(directions)) != len(directions):
-            raise HTTPException(422, "Each uploaded image must use a different direction")
+            raise HTTPException(422, f"Upload at most {MAX_IMAGES} images")
+        if engine == "depth" and len(uploads) != 1:
+            raise HTTPException(422, "Depth Anything accepts one image; choose AnySplat for multiple images")
+        if engine == "anysplat" and len(uploads) < 2:
+            raise HTTPException(422, "AnySplat needs at least two overlapping images")
 
-        cleaned, names, focal_lengths = [], [], []
+        cleaned, names = [], []
         for upload_file in uploads:
             payload = await upload_file.read(MAX_UPLOAD+1)
             await upload_file.close()
@@ -277,7 +252,6 @@ def create_app(data_dir=None):
                         w, h = source.size
                         if w*h > MAX_PIXELS or min(w,h) < 32 or max(w,h)/min(w,h) > 8:
                             raise HTTPException(422, "Use images of at least 32 pixels per side, at most 24 megapixels, and aspect ratio under 8:1")
-                        focal_lengths.append(focal_length_35mm(source))
                         source.load()
                         oriented = ImageOps.exif_transpose(source)
                         rgba = oriented.convert("RGBA")
@@ -290,10 +264,10 @@ def create_app(data_dir=None):
             except (UnidentifiedImageError, OSError, Image.DecompressionBombError, Image.DecompressionBombWarning):
                 raise HTTPException(415, "An uploaded image is invalid, damaged or too large")
         inputs = [
-            {"file": "input.png" if i == 0 else f"input_{i}.png", "view": direction, "focal_35mm": focal_lengths[i]}
-            for i, direction in enumerate(directions)
+            {"file": "input.png" if i == 0 else f"input_{i}.png", "original_name": Path(names[i].replace("\\", "/")).name[:100]}
+            for i in range(len(cleaned))
         ]
-        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "focal_35mm": focal_lengths[0]}
+        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "view_limit": view_limit}
         return app.state.jobs.create(cleaned, names, options)
 
     @app.get("/api/jobs")
@@ -311,8 +285,9 @@ def create_app(data_dir=None):
 
     @app.get("/api/jobs/{job_id}/files/{filename}")
     def asset(job_id: str, filename: str):
-        allowed = {"scene.ply", "scene.gsb", "scene.json", "depth.png", "input.png", "input_1.png", "input_2.png", "input_3.png", "thumbnail.jpg", "worker.log"}
-        if filename not in allowed:
+        fixed = {"scene.ply", "scene.gsb", "scene.json", "depth.png", "thumbnail.jpg", "worker.log"}
+        is_input = filename == "input.png" or bool(re.fullmatch(r"input_(?:[1-9]|1[0-5])\.png", filename))
+        if filename not in fixed and not is_input:
             raise HTTPException(404, "File not found")
         folder = app.state.jobs.path(job_id)
         job = app.state.jobs.read(job_id)

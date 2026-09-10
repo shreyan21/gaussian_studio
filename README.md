@@ -1,183 +1,126 @@
-# Gaussian Scene Studio
+# Gaussian Scene Studio — AnySplat
 
-A local Windows app with a Python backend and an interactive Gaussian-splatting
-viewer. Upload one to four JPEG, PNG or WebP images, reconstruct, orbit/pan/zoom, export a real 3DGS
-`.ply`, and save snapshots of the current view. No paid API or cloud inference.
+Local Windows application for reconstructing an interactive 3D Gaussian scene from
+multiple photographs. AnySplat jointly estimates camera poses and Gaussians from
+uncalibrated, overlapping views. The Python backend exports a binary 3DGS `.ply`;
+the existing WebGL2 viewer provides orbit, pan, zoom, presets, screenshots, and export.
 
-**Multi-view limitation:** SHARP is a single-image model. With two to four uploads,
-the app runs SHARP once per labelled view, normalizes and rotates the independent
-predictions, and fuses their Gaussians. This adds real side/back evidence, but it is
-not joint multi-view training: seams and conflicting predicted regions can remain.
-The depth path still accepts one image. This is not a mesh generator.
+The prior SHARP inference and labelled-view fusion path has been removed. The existing
+Depth Anything V2 one-image fallback, isolated jobs, cancellation, history, upload
+validation, procedural viewer test, PLY writer, and WebGL renderer remain available.
 
-## Start on this computer
+## NVIDIA workstation setup
 
-Open **Start Studio.cmd** in `D:\GaussianSceneStudio`.
+The supplied workstation screenshot shows an NVIDIA RTX A1000 with 8188 MiB VRAM,
+driver 580.97, and a CUDA 13.0 driver capability. Use 64-bit Python 3.11.
 
-The app opens in Chrome/Edge/your default browser at `http://127.0.0.1:7860`.
-If that port is occupied it reserves the next free port and prints the address.
-Keep its terminal open; press Ctrl+C to stop the server and active inference.
+1. Place this folder at `D:\GaussianSceneStudio`.
+2. Double-click **Setup NVIDIA Workstation.cmd**. Internet is needed on first setup.
+3. Double-click **Start Studio.cmd**.
+4. Open `http://127.0.0.1:7860` if the browser does not open automatically.
 
-1. The initial blue sculpture is a **procedural renderer test**, not AI output.
-2. Upload one photo for Depth Anything, or upload up to four photos and select
-   **Apple SHARP · 1–4 labelled views**. Label each photo's direction, leave Compute
-   on **Auto detect**, and choose **Create 3D scene**.
-3. Drag to orbit; right-drag or Shift-drag to pan; scroll to zoom. Arrow keys
-   rotate, + / - zoom, R resets. Source / Left / Right / Back / Top are camera presets.
-4. **Export .ply** downloads every valid Gaussian. **Save image** saves the viewport.
+Setup installs PyTorch 2.8 with its CUDA 12.8 runtime, downloads the pinned AnySplat
+checkpoint (about 2.94 GB), verifies its SHA-256, downloads Depth Anything V2 Small,
+checks the vendored AnySplat import, and performs a real CUDA tensor calculation.
+The NVIDIA CUDA Toolkit, `nvcc`, Linux, WSL, Docker, and a local gsplat build are not
+required for this app's PLY-only inference path.
 
-The first install downloads Python dependencies and weights. Once installed,
-inference and rendering work offline. Images remain in `data/jobs/` on this PC.
-
-## Tomorrow: NVIDIA RTX A1000 workstation
-
-The supplied photos show **NVIDIA RTX A1000, 8188 MiB VRAM, driver 580.97,
-and nvidia-smi CUDA Version 13.0**. That CUDA number is the driver's supported
-CUDA level, not proof that the development toolkit or CUDA-enabled PyTorch is
-installed. This app uses PyTorch 2.8.0 + CUDA 12.8 prebuilt wheels. The newer
-driver can support that runtime. No CUDA Toolkit, `nvcc`, Visual Studio compiler,
-gsplat extension build, Node.js, Docker or WSL is required for these app paths.
-
-1. Transfer the application ZIP, extract it as `D:\GaussianSceneStudio`.
-   Do **not** copy `.venv` from another computer. Virtual environments are not portable.
-   The main ZIP includes the lightweight model. The optional `SHARP-weights.zip`
-   can be extracted into the same parent directory to add the already-downloaded
-   SHARP checkpoint without downloading it again. Both ZIPs contain the same
-   `GaussianSceneStudio` top-level folder. You can also copy `models` directly
-   from this computer's `D:\GaussianSceneStudio`.
-2. Install **64-bit Python 3.11** from https://www.python.org/downloads/windows/.
-   Include the Python launcher. If Python is already installed, check `py -3.11 --version`.
-3. Double-click **Setup NVIDIA Workstation.cmd**. It installs CUDA-enabled
-   PyTorch, dependencies and the small depth model; it checks actual CUDA tensor
-   computation before reporting success. Internet is needed for package downloads.
-4. Open **Start Studio.cmd** and try Depth Anything with **Auto detect** first.
-   The device card should show the RTX A1000. Scene details record the actual device.
-
-PowerShell equivalent, including an explicit Python path if needed:
+PowerShell equivalent:
 
 ```powershell
 cd D:\GaussianSceneStudio
 powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA
-# Or add: -PythonExe 'C:\Path\To\Python311\python.exe'
-.\.venv\Scripts\python.exe scripts\doctor.py --require-cuda
+.\.venv\Scripts\python.exe scripts\doctor.py --require-cuda --require-anysplat
 .\.venv\Scripts\python.exe run.py
 ```
 
-The lightweight model is the safer starting point for an 8 GB GPU. SHARP uses
-considerably more VRAM/RAM; its CUDA path has not been validated on this A1000.
-Close QGIS and other GPU-heavy applications before testing SHARP. For SHARP,
-16 GB system RAM is a practical minimum and 32 GB gives more headroom.
+## Capture and reconstruction
 
-## Optional direct image-to-Gaussian model: Apple SHARP
+- Upload 2–16 images for AnySplat. Walk around one stationary subject and keep adjacent
+  views overlapping. Keep lighting, focus, orientation, and subject scale consistent.
+- Upload order should follow the camera path. If a view budget selects fewer images,
+  the app samples them evenly in that order.
+- **Auto-safe for GPU** uses two views on an 8 GB GPU, four on 12 GB, six on 16 GB,
+  ten on 24 GB, and up to sixteen above 24 GB. This is a conservative heuristic,
+  not a memory guarantee. **Use every upload** attempts all selected files together.
+- More images help only when they show useful, overlapping evidence. Blurry, unrelated,
+  or inconsistent views can reduce reconstruction quality.
+- AnySplat requires CUDA in this application. For a CPU-only computer, choose
+  **Depth Anything V2 · one image** to keep using the earlier visible-surface workflow.
 
-**Read `docs/MODEL-LICENSES.md` first. SHARP's model licence is research-only,
-and excludes commercial product development.** The default depth model is Apache
-licensed. Both are free to download under their respective terms.
+The model always receives 448×448 centre crops, matching the official AnySplat demo.
+The export keeps at most two million strongest valid Gaussians. The interactive preview
+keeps at most 1.5 million. Metadata records uploads, processed inputs, view budget,
+GPU, VRAM, compute time, model name, counts, and known limitations.
 
-For eligible non-commercial scientific research, install SHARP:
-
-```powershell
-cd D:\GaussianSceneStudio
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA -IncludeSharp
-```
-
-This also downloads the approximately 2.6 GB SHARP checkpoint. Then select
-**Apple SHARP · 1–4 labelled views** in the app and acknowledge its permitted use.
-The first model load may take time. CUDA inference uses mixed precision to
-reduce memory; covariance unprojection runs in float32 on CPU. The fixed 1536×1536
-model input is preserved. Multiple views are inferred sequentially so peak model
-VRAM should remain close to a single prediction. SHARP does not use the depth
-reconstruction detail slider.
-
-For multi-view object capture, use two to four distinct labels from Front, Right,
-Back, Left, Top and Bottom. Keep the object upright, centred, similarly sized and
-similarly lit in every image. Front + Right + Back + Left is the recommended
-four-image set. The combined export is capped at two million Gaussians with equal
-sampling from each supplied view; the interactive preview remains capped at 1.5 million.
-
-No claim is made that SHARP always fits in 8 GB VRAM. A failed CUDA allocation
-produces an actionable error and does not silently substitute a different model.
-You can choose CPU for SHARP if the workstation has sufficient RAM; CPU mode is
-disabled below 14 GB total RAM to avoid exhausting this laptop's memory.
-
-The supplied SHARP checkpoint is SHA-256 verified. Its 1,038 tensor names/shapes
-match the pinned 702,305,169-parameter model. This compatibility check does not
-establish CUDA inference correctness or runtime memory requirements.
-
-## What is implemented
+## Architecture
 
 ```text
-Photograph -> Python/FastAPI -> isolated inference worker
-  A: Depth Anything V2 Small -> relative inverse depth -> Gaussian lifting
-  B: Apple SHARP             -> 1–4 independent Gaussian predictions
-                             -> labelled rotation, scale/centre alignment and fusion
-             -> 3DGS binary PLY + scene metadata + preview buffer
-             -> local WebGL2 Gaussian projection + sorted alpha compositing
-             -> mouse/keyboard-controlled 3D view
+2–16 photographs
+  -> FastAPI upload validation and ordered local job files
+  -> isolated CUDA worker
+  -> AnySplat native joint multi-view inference
+  -> camera/coordinate and quaternion conversion
+  -> portable 3DGS PLY + bounded WebGL preview + metadata
+  -> local anisotropic Gaussian splatting viewer
+
+1 photograph
+  -> Depth Anything V2 Small
+  -> relative-depth Gaussian lifting
+  -> same PLY and viewer
 ```
 
-- **Depth path:** official 24.8M-parameter pretrained small model. Inverse depth is
-  normalized, converted to relative distance, and unprojected through an estimated
-  pinhole camera. Local depth derivatives determine surface orientation. Each sample
-  becomes an anisotropic Gaussian with RGB colour, opacity, three scales and rotation.
-  Surface discontinuities shrink splats to reduce bridges. There is no training or
-  multi-view optimization, and distance/scale is not metrically calibrated.
-- **SHARP path:** pinned official model code, weights-only checkpoint loading, fixed
-  model resolution, official Gaussian unprojection, explicit OpenCV-to-viewer rotation
-  and linear-RGB-to-sRGB conversion. Multi-view jobs reuse one loaded model and infer
-  each image sequentially, then robustly normalize, rotate and combine the results.
-  Focal length is estimated, so absolute scale may differ from the original scene.
-  No compilation-dependent gsplat rendering import.
-- **Renderer:** custom WebGL2 code in `static/renderer.js`. Computes
-  `Sigma3 = R diag(s^2) R^T`, projects with `Sigma2 = J V Sigma3 V^T J^T + 0.3 I`,
-  draws 3-sigma elliptical quads, evaluates `alpha = opacity * exp(-r^2/2)`, and
-  composites in back-to-front order. A worker performs 16-bit depth-bin sorting.
-  This is real anisotropic Gaussian rasterization, not a point cloud or textured plane.
-- **Preview budget:** at most 1,500,000 Gaussians. Larger scenes use deterministic
-  uniform sampling and enlarged tangential footprints; full PLY retains all valid
-  Gaussians. The UI reports preview and full counts. Preview appearance is approximate.
-- **Format:** binary little-endian PLY, SH degree 0 colour, log-scale, logit-opacity,
-  scalar-first quaternion. +X right, +Y up, -Z forward. Colours use the common sRGB
-  PLY convention; blending is in display RGB, not physically exact linear light.
-- **Operations:** single inference at a time, process cancellation, 30-minute timeout,
-  restart recovery, per-job logs, upload checks, local-only HTTP server.
+The AnySplat adapter uses the official source at pinned commit
+`5f5e208a7dd57d52e43ea0d553a95eab526e8775` and the Hugging Face model at pinned
+revision `d2e8c343672646041ad4ea518184968f94362f01`. The 2.94 GB checkpoint SHA-256 is
+`1c4de2ba5a29c540b899af901bf02107395b5f0617655d347e262f814b4c0c7c`.
+
+The upstream demo depends on Linux-focused gsplat, xFormers, and torch-scatter builds.
+This app does not use the upstream CUDA video decoder. It uses PyTorch scaled-dot-product
+attention and scatter operations for the same inference roles, then renders the result
+with the existing WebGL2 splatter. The full AnySplat model still runs; this is not a
+mock, point cloud substitute, or per-image fusion path.
+
+## Commands
+
+```powershell
+# CPU setup with the one-image depth fallback only
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CPU
+
+# Download or repair models manually
+.\.venv\Scripts\python.exe scripts\download_models.py --model anysplat
+.\.venv\Scripts\python.exe scripts\download_models.py --model depth
+
+# Verify source/import/checkpoint and local tests
+.\.venv\Scripts\python.exe scripts\verify_anysplat.py --check-import --check-hash
+.\.venv\Scripts\python.exe -m pytest -q
+```
 
 ## Troubleshooting
 
 | Symptom | Action |
 |---|---|
-| Python not found | Install Python 3.11 x64, or provide `-PythonExe` to setup.ps1. |
-| CUDA false but nvidia-smi works | Run CUDA setup; the old environment may contain CPU-only PyTorch. |
-| Model missing | Run `.venv\Scripts\python.exe scripts\download_models.py --model depth` (or `sharp`). |
-| Download blocked at office | Use a permitted network/proxy or copy the already-downloaded `models` and `vendor` folders; do not copy `.venv`. |
-| CUDA out of memory | Close GPU-heavy programs; use Depth Anything, or explicitly select SHARP CPU with adequate RAM. |
-| SHARP source or import error | Rerun `setup.ps1 -Device CUDA -IncludeSharp`; read the job log. |
-| Blank 3D viewport | Enable browser graphics acceleration, restart Chrome/Edge, click Source or Reset view. |
-| Holes/streaks or seams | Add labelled opposite-side photographs with consistent framing. SHARP predictions are fused geometrically, so conflicting predictions can still produce seams. |
-| Image has shallow depth | Try another photo with perspective, or adjust Depth amount in the depth model settings. |
-| App says disconnected | Keep the Python terminal running; restart Start Studio.cmd and reload its printed address. |
+| AnySplat model missing | Run `Setup NVIDIA Workstation.cmd`, or download `--model anysplat`. |
+| CUDA is false | Rerun NVIDIA setup. `nvidia-smi` alone does not prove CUDA-enabled PyTorch works. |
+| CUDA out of memory | Close QGIS and GPU-heavy apps. Use Auto-safe or fewer views. |
+| Poor/fragmented scene | Use sharper adjacent views with more overlap and consistent framing. |
+| Blank viewport | Enable browser graphics acceleration, restart Chrome/Edge, and load the calibration scene. |
+| Download blocked | Use an approved network/proxy, or copy `models/anysplat` from a completed setup. Do not copy `.venv`. |
 
-Manual models-only installation and CPU setup:
+See `docs/VALIDATION.md` for tested and untested boundaries. See
+`docs/MODEL-LICENSES.md` before commercial distribution.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CPU
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m pip check
-```
+## Main files
 
-See `docs/VALIDATION.md` for measured local checks and the remaining GPU checks.
+- `studio/server.py`: local API, ordered multi-upload validation, jobs, history, cancellation.
+- `studio/worker.py`: AnySplat and depth inference orchestration.
+- `studio/anysplat_runtime.py`: Windows inference shims, model loading, preprocessing, conversion.
+- `studio/gaussians.py`: validation, binary PLY, preview buffer, depth lifting.
+- `static/`: UI, WebGL2 renderer, and depth-sort worker.
+- `vendor/anysplat/`: pinned upstream source and licence.
+- `models/`: downloaded local weights; ignored by Git and omitted from source ZIPs.
 
-## Files
-
-- `studio/server.py`: API, upload validation, subprocess jobs, history and cancellation.
-- `studio/worker.py`: real model inference and SHARP adapter.
-- `studio/gaussians.py`: Gaussian construction, PLY and preview export.
-- `static/`: local interface, WebGL shader renderer and depth-sort worker.
-- `scripts/`: diagnostics and pinned model/source downloads.
-- `data/jobs/<id>/`: input, thumbnail, progress, output PLY, buffer, metadata and logs.
-- `models/`: local weights. `vendor/ml-sharp/`: pinned optional upstream source/licences.
-
-Sources: [SHARP](https://github.com/apple/ml-sharp),
-[Depth Anything V2 Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf),
-[PyTorch 2.8 installation](https://pytorch.org/get-started/previous-versions/),
-[NVIDIA CUDA compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/).
+Sources: [AnySplat repository](https://github.com/OpenRobotLab/AnySplat),
+[AnySplat model](https://huggingface.co/lhjiang/anysplat),
+[AnySplat paper](https://arxiv.org/abs/2505.23716), and
+[Depth Anything V2 Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf).

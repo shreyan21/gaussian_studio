@@ -1,74 +1,43 @@
-# Validation record — 9 September 2026
+# Validation record
 
-## Verified on this computer
+Date: 2026-09-10
 
-- Windows 11 build 26200; Python 3.11.15; 7.7 GiB usable system RAM.
-- PyTorch 2.8.0+cpu / Torchvision 0.23.0+cpu. CUDA unavailable on this computer.
-- Dependencies installed in a dedicated `D:\GaussianSceneStudio\.venv`.
-- Corrected PowerShell installer completed successfully from the D-drive folder;
-  `pip check` reported no broken requirements. All resolved Python dependency
-  versions are constrained by `constraints-windows-py311.txt`.
-- **23 tests passed, 1 optional SHARP test skipped** from the current installation. Coverage: Gaussian PLY
-  round-trip, perspective/depth direction, anisotropy, finite outputs, preview/full
-  export separation, labelled-view rotation/fusion, one-to-four image storage,
-  duplicate-direction rejection, valid/invalid uploads, research flag, cross-origin writes,
-  streamed upload size, single active job, real process cancellation, failed CUDA
-  worker reporting, stale-job recovery, and upstream SHARP covariance conversion.
-- Test output has two dependency deprecation warnings from Starlette's HTTPX
-  test-client integration. They did not fail tests or appear in browser runtime.
-- Python compilation and JavaScript syntax checks passed.
-- Actual CPU inference on the supplied `gpu-detail-1.jpeg`: **196,096 Gaussians**,
-  **21.97 seconds** as recorded before final export, 512×383 sampling resolution.
-  A repeat also completed (approximately 21 seconds). These are local observations,
-  not general speed claims or GPU benchmarks.
-- Independent final-installation check: `gpu-detail-2.jpeg` processed by
-  `D:\GaussianSceneStudio\.venv\Scripts\python.exe` produced **110,208 Gaussians**
-  at 384×287 sampling resolution in **11.44 seconds** on CPU. The installed
-  service reported the D-drive interpreter, both model files available, and a
-  completed job with valid scene metadata.
-- Full workflow in a real Chromium browser: upload, create, progress, scene load,
-  mouse orbit, source/back presets, keyboard rotate/zoom/reset, PLY download,
-  PNG screenshot download, model switch and quick-guide dialog.
-- Downloaded PLY was parsed again: **196,096 valid Gaussians**, with nonzero depth
-  variation (Z range approximately 1.857 relative units). Screenshot was a valid
-  1031×550 PNG with nonuniform colour content.
-- Desktop view at 1440×1000 and mobile view at 390×844 were visually inspected.
-  Mobile document scroll width equalled viewport width; no horizontal overflow.
-- Browser console: **zero errors/warnings** during tested workflows. WebGL error
-  value was 0 after camera orbit/back view and keyboard reset.
-- Port fallback was observed: with the development server occupying 7860, the
-  installed server reserved 7861. Reopening the final launcher reused the existing
-  installation instead of starting a competing job manager.
+## Confirmed on this CPU-only computer
 
-## SHARP compatibility checks
+- Python source compiles.
+- API accepts ordered AnySplat uploads and stores up to 16 sanitized images.
+- AnySplat requires 2 or more images; Depth Anything requires exactly 1.
+- CPU selection is rejected for AnySplat.
+- Auto/all/explicit view budgets are validated and saved.
+- Multi-image assets beyond the old four-image limit are retrievable safely.
+- PLY round trips preserve position, scale, rotation, opacity, and SH0 colour.
+- AnySplat output conversion handles coordinate axes, xyzw-to-wxyz rotation,
+  opacity, SH0 colour, invalid splats, and the two-million output cap.
+- Auto-safe VRAM budgets and deterministic ordered sampling are unit tested.
+- Existing procedural scene, WebGL files, job cancellation, history, restart recovery,
+  upload hardening, cross-origin blocking, and error-log flow remain covered.
+- JavaScript syntax check passes.
+- Pinned AnySplat source marker and required files are verified.
 
-- Official source pinned to `1eaa046834b81852261262b41b0919f5c1efdd2e`.
-- The official 2,809,738,232-byte checkpoint is downloaded locally.
-- SHA-256: `94211a75198c47f61fca7d739ba08a215418d8d398d48fddf023baccc24f073d`.
-- Inference imports work without gsplat or CUDA extension compilation.
-- Meta-device architecture/checkpoint compatibility: **702,305,169 parameters**,
-  **1,038 tensors**, no missing or unexpected keys, matching tensor shapes.
-- Real upstream unprojection/covariance conversion was tested on tiny tensors.
+## Not claimed on this computer
 
-**These checks do not constitute a SHARP forward-pass test.** Full SHARP inference,
-mixed-precision output quality, CUDA driver/runtime execution and actual VRAM usage
-remain unverified. An 8 GB A1000 is the target workstation, not a tested guarantee.
+This computer has no usable NVIDIA CUDA runtime. The AnySplat 2.94 GB checkpoint is not
+downloaded into the source package, and a real AnySplat forward pass cannot be run here.
+Source/import/contract tests do not prove CUDA execution, VRAM fit, speed, or scene quality.
 
-## Office acceptance checks
+## Required NVIDIA acceptance test
 
-1. Run the NVIDIA setup and confirm `doctor.py --require-cuda` passes a real CUDA
-   tensor computation and identifies the RTX A1000.
-2. Generate a lightweight-model scene with Auto compute. Scene metadata must say
-   `cuda`, and the PLY download must load in the interactive viewer.
-3. For permitted research, install/enable SHARP, run Front + Right + Back + Left
-   photographs with consistent object framing, then inspect all presets, seams and
-   Gaussian metadata. Record time and peak memory use.
-4. Check cancel/retry and a second job. Close other GPU-heavy programs if memory
-   is insufficient; explicitly choose the lightweight model or SHARP CPU with
-   adequate system RAM if needed.
-5. Review the limitation with the senior: the implementation fuses separately
-   inferred and labelled SHARP scenes; it does not make SHARP a jointly conditioned
-   multi-view model, and unseen geometry is not guaranteed accurate.
+1. Run `Setup NVIDIA Workstation.cmd` and require a clean exit.
+2. Run `.venv\Scripts\python.exe scripts\doctor.py --require-cuda --require-anysplat`.
+3. Run `.venv\Scripts\python.exe scripts\verify_anysplat.py --check-import --check-hash`.
+4. Start the app. Load the procedural scene and verify orbit, pan, zoom, reset,
+   screenshot, fullscreen, and PLY download.
+5. Upload two overlapping 448-pixel-or-larger views. Use AnySplat + Auto-safe.
+6. Confirm the job completes, scene renders, metadata says `method: anysplat`,
+   `input_count: 2`, `device: cuda`, and export opens again in the viewer.
+7. Retry with four views only if two-view inference has safe free VRAM. On the RTX A1000,
+   close QGIS and other GPU-heavy programs first.
+8. Cancel one running job and confirm the slot releases and another job can start.
+9. Restart the app and confirm the completed scene remains in Recent scenes.
 
-No application can honestly be guaranteed bug-free across untested machines.
-This record distinguishes executed checks from workstation checks still required.
+Do not report AnySplat CUDA as validated until steps 1–9 pass on the workstation.
