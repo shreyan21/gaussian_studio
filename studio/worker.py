@@ -12,6 +12,10 @@ from PIL import Image
 from studio.config import DEPTH_DIR
 from studio.gaussians import export_scene, from_depth
 
+# Reduce fragmentation in the short-lived CUDA worker. This must be set before
+# PyTorch is imported; PyTorch 2.8 supports this allocator option on Windows.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 
 def progress(directory, percent, message):
     temporary = directory / "progress.tmp"
@@ -67,26 +71,39 @@ def anysplat_predict(directory, options, device):
     inputs = options["inputs"]
     paths = [directory / item["file"] for item in inputs]
     requested_limit = options.get("view_limit", "auto")
-    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+    torch.cuda.empty_cache()
+    free_bytes, total_bytes = torch.cuda.mem_get_info()
+    vram_gb = total_bytes / 1024**3
+    free_vram_gb = free_bytes / 1024**3
     if requested_limit == "all":
         limit = len(paths)
     elif requested_limit == "auto":
-        limit = automatic_view_limit(vram_gb, len(paths))
+        # Account for memory already used by Windows, the browser and other apps.
+        limit = automatic_view_limit(min(vram_gb, free_vram_gb), len(paths))
     else:
         limit = min(len(paths), int(requested_limit))
     selected = select_inputs(paths, limit)
     selected_names = [path.name for path in selected]
 
     if len(selected) < 2:
-        raise RuntimeError("AnySplat needs at least two selected images. Upload two or more overlapping views.")
+        raise RuntimeError(
+            f"AnySplat needs at least 5.5 GB of free GPU memory; only {free_vram_gb:.1f} GB is free. "
+            "Close browser tabs, QGIS and other GPU-heavy programs, then retry with Auto-safe."
+        )
+    compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    low_vram = vram_gb <= 8.5
     progress(directory, 10, f"Preparing {len(selected)} of {len(paths)} uploaded views at 448 x 448")
-    images = torch.stack([preprocess_image(path) for path in selected], dim=0).unsqueeze(0).to(device)
-    progress(directory, 20, f"Loading AnySplat pretrained weights on {torch.cuda.get_device_name(0)}")
-    model = load_model(device)
+    images = torch.stack([preprocess_image(path) for path in selected], dim=0).unsqueeze(0)
+    images = images.to(device=device, dtype=compute_dtype if low_vram else torch.float32)
+    profile = " · 8 GB low-memory mode" if low_vram else ""
+    progress(directory, 20, f"Loading AnySplat pretrained weights on {torch.cuda.get_device_name(0)}{profile}")
+    model = load_model(device, parameter_dtype=compute_dtype if low_vram else None)
     progress(directory, 42, f"Jointly reconstructing from {len(selected)} uncalibrated views")
-    with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+    with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=compute_dtype):
         gaussians, poses = model.inference(images)
     del images, poses, model
+    gc.collect()
+    torch.cuda.empty_cache()
     progress(directory, 82, "Converting AnySplat output to portable Gaussian PLY")
     g = to_viewer_gaussians(gaussians)
     predicted_count = int(gaussians.means.shape[1])
@@ -99,13 +116,17 @@ def anysplat_predict(directory, options, device):
         "engine": "AnySplat feed-forward multi-view reconstruction",
         "method": "anysplat",
         "device": "cuda",
-        "precision": "CUDA bfloat16 autocast; float32 PLY export",
+        "precision": f"CUDA {str(compute_dtype).removeprefix('torch.')} autocast"
+        + (" and model weights" if low_vram else "")
+        + "; float32 PLY export",
         "licence": "AnySplat code and published model: MIT; see docs/MODEL-LICENSES.md for bundled third-party notices",
         "input_count": len(selected),
         "uploaded_count": len(paths),
         "selected_inputs": selected_names,
         "view_limit": requested_limit,
         "vram_gb": round(vram_gb, 1),
+        "free_vram_gb_at_start": round(free_vram_gb, 1),
+        "low_vram_mode": low_vram,
         "predicted_gaussians": predicted_count,
         "limitation": "Feed-forward reconstruction from uncalibrated overlapping views. Regions never seen in any input can remain incomplete; output is capped at two million strongest Gaussians for portable viewing.",
     }
@@ -129,8 +150,10 @@ def main():
                     image = source.convert("RGB")
                 g, meta = depth_predict(image, directory, options, device)
         except torch.cuda.OutOfMemoryError as exc:
+            gc.collect()
+            torch.cuda.empty_cache()
             if options["engine"] == "anysplat":
-                message = "AnySplat ran out of GPU memory. Retry with Auto-safe or fewer selected views, and close QGIS/browser GPU-heavy work. No fallback output was substituted."
+                message = "AnySplat ran out of GPU memory. On an RTX A1000, use Auto-safe or exactly 2 views and close QGIS/browser GPU-heavy work. No fallback output was substituted."
             else:
                 message = "The depth model ran out of GPU memory. Close GPU-heavy programs, reduce Detail, or select CPU. No fallback output was substituted."
             raise RuntimeError(message) from exc

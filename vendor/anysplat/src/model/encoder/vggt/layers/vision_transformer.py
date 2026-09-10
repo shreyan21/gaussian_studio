@@ -120,7 +120,10 @@ class DinoVisionTransformer(nn.Module):
         if drop_path_uniform is True:
             dpr = [drop_path_rate] * depth
         else:
-            dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+            # AnySplat is constructed on the meta device so the 2.94 GB checkpoint can
+            # be assigned without allocating a second full model. Scalar setup values
+            # must stay on CPU because Tensor.item() is unavailable for meta tensors.
+            dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth, device="cpu")]  # stochastic depth decay rule
 
         if ffn_layer == "mlp":
             logger.info("using MLP layer as FFN")

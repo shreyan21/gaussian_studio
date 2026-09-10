@@ -139,22 +139,24 @@ def select_inputs(paths: list[Path], limit: int) -> list[Path]:
     return [paths[int(i)] for i in indices]
 
 
-def automatic_view_limit(total_vram_gb: float, uploaded: int) -> int:
+def automatic_view_limit(available_vram_gb: float, uploaded: int) -> int:
     # Conservative defaults for a 1B-parameter model at fixed 448x448 input.
-    if total_vram_gb <= 8.5:
+    if available_vram_gb < 5.5:
+        safe = 1
+    elif available_vram_gb <= 8.5:
         safe = 2
-    elif total_vram_gb <= 12.5:
+    elif available_vram_gb <= 12.5:
         safe = 4
-    elif total_vram_gb <= 16.5:
+    elif available_vram_gb <= 16.5:
         safe = 6
-    elif total_vram_gb <= 24.5:
+    elif available_vram_gb <= 24.5:
         safe = 10
     else:
         safe = 16
     return max(1, min(uploaded, safe))
 
 
-def load_model(device="cuda"):
+def load_model(device="cuda", parameter_dtype=None):
     import torch
     from safetensors.torch import load_file
 
@@ -196,7 +198,14 @@ def load_model(device="cuda"):
             else:
                 raise RuntimeError(f"Unsupported AnySplat non-persistent buffer: {name}")
             module._buffers[name] = value
-    model.eval().to(device)
+    model.eval()
+    if parameter_dtype is None:
+        model.to(device)
+    else:
+        # RTX A1000-class GPUs need the 1B-parameter checkpoint resident in a
+        # 16-bit dtype. Casting during the CPU-to-GPU transfer avoids a temporary
+        # float32 copy on the device and saves roughly 1.5 GB of VRAM.
+        model.to(device=device, dtype=parameter_dtype)
     for parameter in model.parameters():
         parameter.requires_grad_(False)
     return model

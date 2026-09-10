@@ -11,28 +11,102 @@ validation, procedural viewer test, PLY writer, and WebGL renderer remain availa
 
 ## NVIDIA workstation setup
 
-The supplied workstation screenshot shows an NVIDIA RTX A1000 with 8188 MiB VRAM,
-driver 580.97, and a CUDA 13.0 driver capability. Use 64-bit Python 3.11.
+These instructions are for Windows 10/11 with an NVIDIA RTX A1000 (8 GB VRAM).
+Use **64-bit Python 3.11**. Do not use Python 3.12 or 3.13 for this project.
 
-1. Place this folder at `D:\GaussianSceneStudio`.
-2. Double-click **Setup NVIDIA Workstation.cmd**. Internet is needed on first setup.
-3. Double-click **Start Studio.cmd**.
-4. Open `http://127.0.0.1:7860` if the browser does not open automatically.
+### Before running setup
 
-Setup installs PyTorch 2.8 with its CUDA 12.8 runtime, downloads the pinned AnySplat
-checkpoint (about 2.94 GB), verifies its SHA-256, downloads Depth Anything V2 Small,
-checks the vendored AnySplat import, and performs a real CUDA tensor calculation.
-The NVIDIA CUDA Toolkit, `nvcc`, Linux, WSL, Docker, and a local gsplat build are not
-required for this app's PLY-only inference path.
+1. Install the current NVIDIA workstation driver, restart Windows, and confirm that
+   the RTX A1000 appears in Device Manager.
+2. Install 64-bit Python 3.11 from python.org. Enable **Python Launcher** during the
+   installer. Adding Python to `PATH` is also recommended.
+3. Copy or clone this repository to `D:\gaussian_studio`. Copy the source code and,
+   optionally, the `models` folder. **Do not copy `.venv` from another computer**;
+   compiled packages in a virtual environment are machine-specific.
+4. Keep at least 15 GB of disk space free. The first setup needs an internet connection
+   and downloads CUDA-enabled PyTorch, the 2.94 GB AnySplat checkpoint, and the depth
+   fallback model.
 
-PowerShell equivalent:
+Open **PowerShell** and run these two read-only checks:
 
 ```powershell
-cd D:\GaussianSceneStudio
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA
+nvidia-smi
+py -3.11 -c "import sys; print(sys.version); print(sys.executable); print('64-bit:', sys.maxsize > 2**32)"
+```
+
+`nvidia-smi` confirms that Windows can communicate with the NVIDIA driver. The second
+command confirms that the Python launcher can find a 64-bit Python 3.11 installation.
+Stop here and fix the driver or Python installation if either command fails.
+
+### Copy/paste setup and launch
+
+Run this complete block from PowerShell:
+
+```powershell
+Set-Location -LiteralPath 'D:\gaussian_studio'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA
 .\.venv\Scripts\python.exe scripts\doctor.py --require-cuda --require-anysplat
+.\.venv\Scripts\python.exe scripts\verify_anysplat.py --check-hash --check-import
 .\.venv\Scripts\python.exe run.py
 ```
+
+What each command does:
+
+| Command | Purpose |
+|---|---|
+| `Set-Location ...` | Changes PowerShell to the repository folder so every relative path below is correct. |
+| `setup.ps1 -Device CUDA` | Creates `.venv` with Python 3.11, upgrades pip, installs the app dependencies, installs the pinned CUDA-enabled PyTorch build, installs AnySplat dependencies, downloads both models, verifies the AnySplat checkpoint and import, checks package compatibility, and performs a real CUDA calculation. |
+| `doctor.py ...` | Rechecks Python, RAM, NVIDIA driver visibility, CUDA-enabled PyTorch, a real tensor calculation on the GPU, GPU name/VRAM, and the local AnySplat files. It exits with an error instead of silently continuing if CUDA or AnySplat is unavailable. |
+| `verify_anysplat.py ...` | Verifies the pinned AnySplat source, imports it, and recalculates the downloaded checkpoint's SHA-256 hash. |
+| `run.py` | Starts the local web application. Keep this PowerShell window open while using the app; press `Ctrl+C` to stop it. |
+
+When startup completes, use `http://127.0.0.1:7860`. The setup script supplies the
+PyTorch CUDA 12.8 runtime, so the full NVIDIA CUDA Toolkit, `nvcc`, Linux, WSL, Docker,
+and a local gsplat build are not required for this app's PLY-only inference path.
+
+If Python 3.11 is installed but the launcher cannot find it, give setup the exact path:
+
+```powershell
+Set-Location -LiteralPath 'D:\gaussian_studio'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA -PythonExe 'C:\Path\To\Python311\python.exe'
+```
+
+Replace the example Python path with the real `python.exe` path. Setup rejects the
+wrong Python version or a 32-bit interpreter before installing anything.
+
+### Safe reruns and repairs
+
+It is safe to rerun the CUDA setup command after an interrupted download or failed
+installation. It reuses the existing `.venv`, checks the installed PyTorch runtime,
+repairs mismatched packages, resumes/rechecks model files, and repeats diagnostics.
+To repair only a model, run:
+
+```powershell
+Set-Location -LiteralPath 'D:\gaussian_studio'
+.\.venv\Scripts\python.exe scripts\download_models.py --model anysplat
+.\.venv\Scripts\python.exe scripts\download_models.py --model depth
+.\.venv\Scripts\python.exe scripts\verify_anysplat.py --check-hash --check-import
+```
+
+If a verified `models` folder was copied from another workstation, setup can avoid the
+large model download. It still recreates and validates the local Python environment:
+
+```powershell
+Set-Location -LiteralPath 'D:\gaussian_studio'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA -SkipModelDownload
+.\.venv\Scripts\python.exe scripts\verify_anysplat.py --check-hash --check-import
+```
+
+The double-click alternative performs the same main setup: run
+**Setup NVIDIA Workstation.cmd**, then **Start Studio.cmd**. The explicit PowerShell
+commands above are preferable when setting up a new workstation because failures remain
+visible and the two verification commands give a clear pass/fail result.
+
+For the first reconstruction on an RTX A1000, close other GPU-heavy programs, choose
+**Auto-safe for GPU**, and start with two sharp, overlapping photographs of a rigid,
+textured object. The worker refuses to start AnySplat below 5.5 GB of currently free
+VRAM rather than crashing partway through. Uploaded images, job metadata, and generated
+PLY files are stored under `data/` and are not committed to Git.
 
 ## Capture and reconstruction
 
@@ -40,7 +114,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA
   views overlapping. Keep lighting, focus, orientation, and subject scale consistent.
 - Upload order should follow the camera path. If a view budget selects fewer images,
   the app samples them evenly in that order.
-- **Auto-safe for GPU** uses two views on an 8 GB GPU, four on 12 GB, six on 16 GB,
+- **Auto-safe for GPU** uses two views when at least 5.5 GB is free on an 8 GB GPU,
+  four on 12 GB, six on 16 GB,
   ten on 24 GB, and up to sixteen above 24 GB. This is a conservative heuristic,
   not a memory guarantee. **Use every upload** attempts all selected files together.
 - More images help only when they show useful, overlapping evidence. Blurry, unrelated,
@@ -49,6 +124,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA
   **Depth Anything V2 · one image** to keep using the earlier visible-surface workflow.
 
 The model always receives 448×448 centre crops, matching the official AnySplat demo.
+On GPUs with 8.5 GB VRAM or less, including the RTX A1000, the worker transfers model
+weights to CUDA directly in BF16 (FP16 on GPUs without BF16 support). This avoids a
+temporary float32 GPU copy and saves roughly 1.5 GB. Auto-safe also considers currently
+free VRAM, so close other GPU-heavy applications if it reports less than 5.5 GB free.
 The export keeps at most two million strongest valid Gaussians. The interactive preview
 keeps at most 1.5 million. Metadata records uploads, processed inputs, view budget,
 GPU, VRAM, compute time, model name, counts, and known limitations.
@@ -102,7 +181,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CPU
 |---|---|
 | AnySplat model missing | Run `Setup NVIDIA Workstation.cmd`, or download `--model anysplat`. |
 | CUDA is false | Rerun NVIDIA setup. `nvidia-smi` alone does not prove CUDA-enabled PyTorch works. |
-| CUDA out of memory | Close QGIS and GPU-heavy apps. Use Auto-safe or fewer views. |
+| CUDA out of memory | On the RTX A1000, close QGIS/browser GPU-heavy apps and use Auto-safe or exactly 2 views. |
 | Poor/fragmented scene | Use sharper adjacent views with more overlap and consistent framing. |
 | Blank viewport | Enable browser graphics acceleration, restart Chrome/Edge, and load the calibration scene. |
 | Download blocked | Use an approved network/proxy, or copy `models/anysplat` from a completed setup. Do not copy `.venv`. |

@@ -32,6 +32,7 @@ def test_anysplat_conversion_keeps_strongest_with_bounded_output():
 
 def test_auto_budget_and_even_input_sampling():
     paths = list(range(16))
+    assert automatic_view_limit(5.0, 16) == 1
     assert automatic_view_limit(8.0, 16) == 2
     assert automatic_view_limit(16.0, 16) == 6
     assert automatic_view_limit(48.0, 16) == 16

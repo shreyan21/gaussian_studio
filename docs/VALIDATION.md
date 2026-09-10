@@ -14,6 +14,8 @@ Date: 2026-09-10
 - AnySplat output conversion handles coordinate axes, xyzw-to-wxyz rotation,
   opacity, SH0 colour, invalid splats, and the two-million output cap.
 - Auto-safe VRAM budgets and deterministic ordered sampling are unit tested.
+- RTX A1000 low-memory loading uses 16-bit model weights, free-VRAM-aware Auto-safe
+  selection, and the non-meta scalar initialization required by the vendored encoder.
 - Existing procedural scene, WebGL files, job cancellation, history, restart recovery,
   upload hardening, cross-origin blocking, and error-log flow remain covered.
 - JavaScript syntax check passes.
