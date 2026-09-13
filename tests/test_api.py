@@ -47,6 +47,36 @@ def test_public_mode_requires_token_then_sets_session_cookie(tmp_path, monkeypat
         assert health["remote_access"] is True
 
 
+def test_public_mode_accepts_same_origin_forwarded_by_proxy(tmp_path, monkeypatch):
+    monkeypatch.setenv("GSS_SKIP_PROBE", "1")
+    monkeypatch.setenv("GSS_ACCESS_TOKEN", "correct-horse-battery-staple")
+    monkeypatch.setattr(Jobs, "run", lambda *args: None)
+    with TestClient(create_app(tmp_path), base_url="http://127.0.0.1:7860") as public:
+        public.cookies.set("gss_access", "correct-horse-battery-staple")
+        response = public.post(
+            "/api/jobs",
+            headers={
+                "origin": "https://studio.example",
+                "x-forwarded-host": "studio.example",
+                "x-forwarded-proto": "https",
+            },
+            files={"image": ("input.png", photo(), "image/png")},
+        )
+        assert response.status_code == 202
+
+
+def test_local_mode_does_not_trust_forwarded_host(client):
+    response = client.post(
+        "/api/jobs",
+        headers={
+            "origin": "https://unrelated.example",
+            "x-forwarded-host": "unrelated.example",
+        },
+        files={"image": ("input.png", photo(), "image/png")},
+    )
+    assert response.status_code == 403
+
+
 @pytest.mark.parametrize("contents,code", [(b"not an image", 415), (photo((16, 16)), 422), (photo((600, 32)), 422)])
 def test_invalid_uploads(client, contents, code):
     response = client.post("/api/jobs", files={"image": ("input.png", contents, "image/png")})

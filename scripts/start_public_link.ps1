@@ -58,6 +58,18 @@ try {
     }
     if (-not $publicUrl) { throw "Tunnel URL not found. See $tunnelErr" }
 
+    $publicReady = $false
+    $publicHealth = "$publicUrl/api/health?token=$accessToken"
+    for ($attempt = 0; $attempt -lt 60; $attempt++) {
+        if ($server.HasExited) { throw "Studio stopped during public-link verification. See $serverErr" }
+        if ($tunnel.HasExited) { throw "Tunnel stopped during public-link verification. See $tunnelErr" }
+        try {
+            $status = Invoke-RestMethod -Uri $publicHealth -TimeoutSec 5
+            if ($status.app -eq 'Gaussian Scene Studio') { $publicReady = $true; break }
+        } catch { Start-Sleep -Milliseconds 500 }
+    }
+    if (-not $publicReady) { throw "Public link did not become reachable. See $tunnelErr and $serverErr" }
+
     $protectedUrl = "$publicUrl/?token=$accessToken"
     Write-Host ''
     Write-Host 'Protected live link:' -ForegroundColor Green

@@ -219,8 +219,22 @@ def create_app(data_dir=None):
             return response
         if request.method in ("POST", "DELETE", "PUT"):
             origin = request.headers.get("origin")
-            if origin and urlparse(origin).netloc != request.headers.get("host"):
-                return JSONResponse({"detail": "Cross-origin request rejected"}, status_code=403)
+            if origin:
+                origin_host = urlparse(origin).netloc.lower()
+                allowed_hosts = {request.headers.get("host", "").lower()}
+                # A protected public deployment may sit behind a reverse proxy
+                # that connects to loopback while preserving the browser-facing
+                # host in X-Forwarded-Host. Never trust that header in the
+                # unauthenticated local-only mode.
+                if access_token:
+                    forwarded_host = request.headers.get("x-forwarded-host", "")
+                    allowed_hosts.update(
+                        item.strip().lower()
+                        for item in forwarded_host.split(",")
+                        if item.strip()
+                    )
+                if not origin_host or origin_host not in allowed_hosts:
+                    return JSONResponse({"detail": "Cross-origin request rejected"}, status_code=403)
             if request.url.path == "/api/jobs":
                 raw = bytearray()
                 async for chunk in request.stream():
