@@ -27,11 +27,24 @@ def test_home_and_procedural_viewer_without_models(client):
     assert client.get("/static/renderer.js").status_code == 200
     health = client.get("/api/health").json()
     assert health["app"] == "Gaussian Scene Studio"
-    assert health["version"] == "2.0.0"
+    assert health["version"] == "2.1.0"
     assert health["max_images"] == 16
     assert set(health["models"]) == {"depth", "anysplat"}
     assert client.get("/api/demo/scene.gsb").content[:4] == b"GSS1"
     assert client.get("/api/demo/scene.json").json()["method"] == "demo"
+
+
+def test_public_mode_requires_token_then_sets_session_cookie(tmp_path, monkeypatch):
+    monkeypatch.setenv("GSS_SKIP_PROBE", "1")
+    monkeypatch.setenv("GSS_ACCESS_TOKEN", "correct-horse-battery-staple")
+    with TestClient(create_app(tmp_path), base_url="https://studio.example") as public:
+        assert public.get("/").status_code == 401
+        assert public.get("/api/health").status_code == 401
+        unlocked = public.get("/?token=correct-horse-battery-staple")
+        assert unlocked.status_code == 200
+        assert public.cookies.get("gss_access") == "correct-horse-battery-staple"
+        health = public.get("/api/health").json()
+        assert health["remote_access"] is True
 
 
 @pytest.mark.parametrize("contents,code", [(b"not an image", 415), (photo((16, 16)), 422), (photo((600, 32)), 422)])

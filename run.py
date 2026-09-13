@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 import urllib.request
+import urllib.parse
 import webbrowser
 import uuid
 
@@ -19,6 +20,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
+    access_token = os.environ.get("GSS_ACCESS_TOKEN", "").strip()
     DATA.mkdir(parents=True, exist_ok=True)
     instance_lock = FileLock(str(DATA / "server.lock"))
     try:
@@ -29,7 +31,10 @@ if __name__ == "__main__":
         for _ in range(30):
             try:
                 info = json.loads((DATA / "server.json").read_text())
-                with urllib.request.urlopen(info["url"]+"/api/health", timeout=1) as r:
+                health_url = info["url"] + "/api/health"
+                if access_token:
+                    health_url += "?token=" + urllib.parse.quote(access_token, safe="")
+                with urllib.request.urlopen(health_url, timeout=1) as r:
                     status = json.load(r)
                 if status.get("instance_id") == info["instance_id"]:
                     print("Studio is already running:", info["url"])
@@ -55,14 +60,20 @@ if __name__ == "__main__":
     instance_id = uuid.uuid4().hex
     os.environ["GSS_INSTANCE_ID"] = instance_id
     (DATA / "server.json").write_text(json.dumps({"url":url,"pid":os.getpid(),"instance_id":instance_id}))
-    print(f"Gaussian Scene Studio: {url}\nPress Ctrl+C to stop.", flush=True)
+    browser_url = url
+    if access_token:
+        browser_url += "/?token=" + urllib.parse.quote(access_token, safe="")
+    print(f"Gaussian Scene Studio: {browser_url}\nPress Ctrl+C to stop.", flush=True)
     if not args.no_browser:
         def open_browser():
             for _ in range(60):
                 try:
-                    with urllib.request.urlopen(url+"/api/health", timeout=1) as r:
+                    health_url = url + "/api/health"
+                    if access_token:
+                        health_url += "?token=" + urllib.parse.quote(access_token, safe="")
+                    with urllib.request.urlopen(health_url, timeout=1) as r:
                         if json.load(r).get("app") == "Gaussian Scene Studio":
-                            webbrowser.open(url)
+                            webbrowser.open(browser_url)
                             return
                 except Exception:
                     time.sleep(0.5)

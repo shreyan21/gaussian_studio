@@ -2,6 +2,7 @@
 param(
     [ValidateSet('CPU','CUDA')][string]$Device = 'CPU',
     [switch]$SkipModelDownload,
+    [switch]$SkipInferenceTest,
     [string]$PythonExe = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -65,4 +66,8 @@ if ($Device -eq 'CUDA') {
     if (-not $SkipModelDownload) { $doctorArgs += '--require-anysplat' }
 }
 Invoke-Checked $appPython $doctorArgs
+if ($Device -eq 'CUDA' -and -not $SkipModelDownload -and -not $SkipInferenceTest) {
+    Write-Host 'Running one real two-view AnySplat CUDA smoke test...' -ForegroundColor Cyan
+    Invoke-Checked $appPython @('scripts\verify_anysplat.py','--check-import','--check-hash','--check-inference')
+}
 Write-Host 'Setup complete. Double-click Start Studio.cmd.' -ForegroundColor Green

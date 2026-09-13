@@ -2,7 +2,7 @@
 
 ## AnySplat
 
-- Official source: https://github.com/OpenRobotLab/AnySplat
+- Official source: https://github.com/InternRobotics/AnySplat
 - Pinned source commit: `5f5e208a7dd57d52e43ea0d553a95eab526e8775`
 - Published model: https://huggingface.co/lhjiang/anysplat
 - Pinned model revision: `d2e8c343672646041ad4ea518184968f94362f01`

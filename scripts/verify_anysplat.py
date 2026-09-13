@@ -9,7 +9,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from studio.anysplat_runtime import _install_inference_shims, model_ready
 from studio.config import ANYSPLAT_COMMIT, ANYSPLAT_DIR, ANYSPLAT_ROOT, ANYSPLAT_SHA256
 
-REQUIRED = ("src/model/model/anysplat.py", "src/model/encoder/anysplat.py", "src/model/types.py", "LICENSE")
+REQUIRED = (
+    "src/model/model/anysplat.py",
+    "src/model/encoder/anysplat.py",
+    "src/model/encoder/vggt/models/aggregator.py",
+    "src/model/encoder/vggt/models/vggt.py",
+    "src/model/types.py",
+    "LICENSE",
+)
 
 
 def source_status():
@@ -38,10 +45,37 @@ def import_status():
     return AnySplat.__name__ == "AnySplat"
 
 
+def inference_status():
+    """Run one real, two-view CUDA forward pass."""
+    import torch
+    from studio.anysplat_runtime import load_model
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is unavailable")
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    grid = torch.linspace(0, 1, 448, device="cuda")
+    yy, xx = torch.meshgrid(grid, grid, indexing="ij")
+    first = torch.stack((xx, yy, (xx + yy) / 2))
+    second = torch.roll(first, shifts=8, dims=2)
+    images = torch.stack((first, second), dim=0).unsqueeze(0)
+    model = load_model("cuda")
+    with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        gaussians, poses = model.inference(images)
+    count = int(gaussians.means.shape[1])
+    peak = round(torch.cuda.max_memory_allocated() / 1024**3, 2)
+    del gaussians, poses, images, model
+    torch.cuda.empty_cache()
+    if count <= 0:
+        raise RuntimeError("AnySplat returned no Gaussians")
+    return {"gaussians": count, "peak_vram_gb": peak, "gpu": torch.cuda.get_device_name(0)}
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--check-hash", action="store_true")
     parser.add_argument("--check-import", action="store_true")
+    parser.add_argument("--check-inference", action="store_true")
     args = parser.parse_args()
     result = {"source": source_status(), "model_ready": model_ready()}
     if args.check_hash:
@@ -53,10 +87,19 @@ if __name__ == "__main__":
         except Exception as exc:
             result["import_ok"] = False
             result["import_error"] = str(exc)
+    if args.check_inference:
+        try:
+            result["inference"] = inference_status()
+            result["inference_ok"] = True
+        except Exception as exc:
+            result["inference_ok"] = False
+            result["inference_error"] = str(exc)
     print(json.dumps(result, indent=2))
     ok = result["source"]["ready"]
     if args.check_hash:
         ok = ok and result["checkpoint_hash_ok"]
     if args.check_import:
         ok = ok and result["import_ok"]
+    if args.check_inference:
+        ok = ok and result["inference_ok"]
     raise SystemExit(0 if ok else 1)

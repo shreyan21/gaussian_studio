@@ -3,6 +3,7 @@ import io
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -15,7 +16,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -156,6 +157,7 @@ class Jobs:
 
 def create_app(data_dir=None):
     storage = Path(data_dir) if data_dir else DATA
+    access_token = os.environ.get("GSS_ACCESS_TOKEN", "").strip()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -182,11 +184,39 @@ def create_app(data_dir=None):
 
     @app.middleware("http")
     async def local_guard(request: Request, call_next):
-        # Local-only service: reject cross-origin writes and oversized upload bodies,
-        # including chunked requests, before multipart parsing writes a temp file.
+        # Default is loopback-only. Public-tunnel mode requires a generated token
+        # before any page, API, upload, or result can be read.
         hostname = request.url.hostname
-        if hostname not in ("127.0.0.1", "localhost", "::1", "testserver"):
+        query_token = request.query_params.get("token", "")
+        cookie_token = request.cookies.get("gss_access", "")
+        authorization = request.headers.get("authorization", "")
+        bearer_token = authorization[7:] if authorization.lower().startswith("bearer ") else ""
+        token_ok = bool(access_token) and any(
+            secrets.compare_digest(access_token, candidate)
+            for candidate in (query_token, cookie_token, bearer_token)
+            if candidate
+        )
+        if access_token and not token_ok:
+            if request.url.path.startswith("/api/"):
+                return JSONResponse({"detail": "Valid access token required"}, status_code=401)
+            return HTMLResponse(
+                "<h1>Gaussian Scene Studio</h1><p>Access denied. Use complete protected link printed by Start Public Link.cmd.</p>",
+                status_code=401,
+            )
+        if not access_token and hostname not in ("127.0.0.1", "localhost", "::1", "testserver"):
             return JSONResponse({"detail": "Use the local app address"}, status_code=403)
+        if access_token and query_token and request.url.path == "/":
+            response = RedirectResponse("/", status_code=303)
+            response.set_cookie(
+                "gss_access",
+                access_token,
+                httponly=True,
+                secure=request.headers.get("x-forwarded-proto", "").lower() == "https",
+                samesite="strict",
+                max_age=12 * 60 * 60,
+            )
+            response.headers["Referrer-Policy"] = "no-referrer"
+            return response
         if request.method in ("POST", "DELETE", "PUT"):
             origin = request.headers.get("origin")
             if origin and urlparse(origin).netloc != request.headers.get("host"):
@@ -205,7 +235,7 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        return {"app": "Gaussian Scene Studio", "version": "2.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "models": {"depth": (DEPTH_DIR / "model.safetensors").is_file(), "anysplat": anysplat_model_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES}
+        return {"app": "Gaussian Scene Studio", "version": "2.1.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "models": {"depth": (DEPTH_DIR / "model.safetensors").is_file(), "anysplat": anysplat_model_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "remote_access": bool(access_token)}
 
     @app.post("/api/jobs", status_code=202)
     async def upload(
