@@ -27,9 +27,9 @@ def test_home_and_procedural_viewer_without_models(client):
     assert client.get("/static/renderer.js").status_code == 200
     health = client.get("/api/health").json()
     assert health["app"] == "Gaussian Scene Studio"
-    assert health["version"] == "2.1.0"
+    assert health["version"] == "2.2.0"
     assert health["max_images"] == 16
-    assert set(health["models"]) == {"depth", "anysplat"}
+    assert set(health["models"]) == {"depth", "anysplat", "foreground"}
     assert client.get("/api/demo/scene.gsb").content[:4] == b"GSS1"
     assert client.get("/api/demo/scene.json").json()["method"] == "demo"
 
@@ -152,6 +152,7 @@ def test_anysplat_multiview_saved_in_order_without_direction_labels(client, monk
     request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
     assert request["engine"] == "anysplat"
     assert request["view_limit"] == "4"
+    assert request["object_only"] is True
     assert [item["original_name"] for item in request["inputs"]] == [f"view-{i}.png" for i in range(1, 7)]
     assert client.get(f"/api/jobs/{job['id']}/files/input_5.png").status_code == 200
 

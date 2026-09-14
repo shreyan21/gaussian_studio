@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from studio.config import ANYSPLAT_DIR, ANYSPLAT_ID, ANYSPLAT_REVISION, ANYSPLAT_SHA256, DEPTH_DIR, DEPTH_ID, DEPTH_REVISION
+from studio.config import ANYSPLAT_DIR, ANYSPLAT_ID, ANYSPLAT_REVISION, ANYSPLAT_SHA256, DEPTH_DIR, DEPTH_ID, DEPTH_REVISION, FOREGROUND_DIR, FOREGROUND_MODEL, FOREGROUND_SHA256, FOREGROUND_URL
 
 
 def download_depth():
@@ -48,11 +48,30 @@ def download_anysplat():
     print("AnySplat model ready:", ANYSPLAT_DIR)
 
 
+def download_foreground():
+    import urllib.request
+
+    FOREGROUND_DIR.mkdir(parents=True, exist_ok=True)
+    temporary = FOREGROUND_MODEL.with_suffix(".onnx.part")
+    if not FOREGROUND_MODEL.is_file():
+        print("Downloading foreground isolation model (~44 MB)...", flush=True)
+        urllib.request.urlretrieve(FOREGROUND_URL, temporary)
+        temporary.replace(FOREGROUND_MODEL)
+    with FOREGROUND_MODEL.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    if digest != FOREGROUND_SHA256:
+        FOREGROUND_MODEL.unlink(missing_ok=True)
+        raise RuntimeError("Foreground model SHA-256 mismatch. Retry setup.")
+    print("Foreground isolation model ready:", FOREGROUND_MODEL)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=["depth", "anysplat", "all"], default="depth")
+    parser.add_argument("--model", choices=["depth", "anysplat", "foreground", "all"], default="depth")
     args = parser.parse_args()
     if args.model in ("depth", "all"):
         download_depth()
     if args.model in ("anysplat", "all"):
         download_anysplat()
+    if args.model in ("foreground", "all"):
+        download_foreground()

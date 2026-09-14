@@ -131,6 +131,19 @@ def preprocess_image(path: Path):
     return torch.from_numpy(array).permute(2, 0, 1).contiguous()
 
 
+def preprocess_object_image(path: Path, session):
+    """Segment and frame one view so model pixels map directly to an export mask."""
+    import torch
+    from studio.foreground import focus_object, predict_mask
+
+    with Image.open(path) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        focused, mask, coverage = focus_object(image, predict_mask(image, session), INPUT_SIZE)
+    array = np.asarray(focused, dtype=np.float32) / 255.0
+    tensor = torch.from_numpy(array).permute(2, 0, 1).contiguous()
+    return tensor, torch.from_numpy(mask.copy()), coverage
+
+
 def select_inputs(paths: list[Path], limit: int) -> list[Path]:
     """Evenly preserve coverage when a VRAM budget uses fewer uploaded frames."""
     if limit >= len(paths):
@@ -211,7 +224,7 @@ def load_model(device="cuda", parameter_dtype=None):
     return model
 
 
-def to_viewer_gaussians(gaussians, max_gaussians=2_000_000):
+def to_viewer_gaussians(gaussians, max_gaussians=2_000_000, foreground_mask=None):
     """Convert official AnySplat tensors to the app's viewer/PLY array."""
     means = gaussians.means[0].detach().float().cpu().numpy()
     scales = gaussians.scales[0].detach().float().cpu().numpy()
@@ -222,6 +235,11 @@ def to_viewer_gaussians(gaussians, max_gaussians=2_000_000):
     valid = np.isfinite(means).all(1) & np.isfinite(scales).all(1)
     valid &= np.isfinite(rotations).all(1) & np.isfinite(harmonics).all(1) & np.isfinite(opacities)
     valid &= (scales > 0).all(1) & (opacities > 0.005)
+    if foreground_mask is not None:
+        foreground = np.asarray(foreground_mask, dtype=bool).reshape(-1)
+        if len(foreground) != len(valid):
+            raise ValueError(f"Foreground mask has {len(foreground)} pixels for {len(valid)} predicted Gaussians.")
+        valid &= foreground
     indices = np.flatnonzero(valid)
     if len(indices) > max_gaussians:
         # Preserve the strongest surface evidence and keep output/viewer memory bounded.

@@ -2,6 +2,8 @@
 
 Local Python app for reconstructing an interactive 3D Gaussian scene from overlapping photographs. The primary backend is AnySplat. A single-image Depth Anything preview remains available when only one photograph exists.
 
+AnySplat enables **Isolate main object** by default: each view is segmented and cropped around the focused subject, neutral background pixels are withheld from the exported Gaussians, and rotations in the viewer show the reconstructed object instead of the surrounding scene.
+
 ## Office workstation: quickest setup
 
 The photographed workstation has an NVIDIA RTX A1000 with 8 GB VRAM. Its displayed driver (580.97) is new enough for the CUDA 12.8 PyTorch build used here. Keep the driver; install Python 3.11 and Git if missing.

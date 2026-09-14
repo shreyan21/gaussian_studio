@@ -9,12 +9,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from studio.anysplat_runtime import model_ready as anysplat_model_ready
 from studio.config import ANYSPLAT_ROOT, DEPTH_DIR
+from studio.foreground import model_ready as foreground_model_ready
 
 
 def check():
     import psutil
     source = ANYSPLAT_ROOT / "src" / "model" / "model" / "anysplat.py"
-    result = {"status": "ready", "python": platform.python_version(), "executable": sys.executable, "platform": platform.platform(), "ram_gb": round(psutil.virtual_memory().total/1024**3,1), "available_ram_gb": round(psutil.virtual_memory().available/1024**3,1), "cuda": False, "depth_model": (DEPTH_DIR / "model.safetensors").exists(), "anysplat_model": anysplat_model_ready(), "anysplat_source": source.is_file()}
+    result = {"status": "ready", "python": platform.python_version(), "executable": sys.executable, "platform": platform.platform(), "ram_gb": round(psutil.virtual_memory().total/1024**3,1), "available_ram_gb": round(psutil.virtual_memory().available/1024**3,1), "cuda": False, "depth_model": (DEPTH_DIR / "model.safetensors").exists(), "anysplat_model": anysplat_model_ready(), "foreground_model": foreground_model_ready(), "anysplat_source": source.is_file()}
     try:
         import torch
         result.update(torch=torch.__version__, torch_cuda_runtime=torch.version.cuda, cuda=torch.cuda.is_available())
@@ -47,6 +48,6 @@ if __name__ == "__main__":
     if args.require_cuda and not (info.get("cuda") and info.get("cuda_compute_test")):
         print("CUDA compute failed. Check the driver and install the CUDA PyTorch build with setup.ps1 -Device CUDA.", file=sys.stderr)
         raise SystemExit(1)
-    if args.require_anysplat and not info.get("anysplat_model"):
-        print("AnySplat source or model is missing. Rerun Setup NVIDIA Workstation.cmd.", file=sys.stderr)
+    if args.require_anysplat and not (info.get("anysplat_model") and info.get("foreground_model")):
+        print("AnySplat or its foreground isolation model is missing. Rerun Setup NVIDIA Workstation.cmd.", file=sys.stderr)
         raise SystemExit(1)

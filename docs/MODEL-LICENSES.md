@@ -25,7 +25,17 @@ and import graph. The app's technical integration cannot resolve that legal ques
 - Pinned revision: `5426e4f0f36572d16453bbda7a8389317b1bef99`
 - Model card licence: Apache-2.0
 
-## Application
+## Silueta foreground model
+
+- Model file: https://github.com/danielgatis/rembg/releases/download/v0.0.0/silueta.onnx
+- Architecture/source: https://github.com/xuebinqin/U-2-Net
+- Purpose: offline main-object segmentation before AnySplat reconstruction
+- Source licence: Apache-2.0
+
+The model is downloaded during setup and verified against the pinned SHA-256 in
+`studio/config.py`. It runs through ONNX Runtime on CPU; uploaded images stay local.
+
+## Application and dependencies
 
 Gaussian Scene Studio's original code is MIT; see the root `LICENSE`. Upstream source,
 model weights, Python packages, fonts, drivers, and runtime components retain their own

@@ -7,6 +7,7 @@ import time
 import traceback
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 from studio.config import DEPTH_DIR
@@ -66,7 +67,7 @@ def depth_predict(image, directory, options, device):
 
 def anysplat_predict(directory, options, device):
     import torch
-    from studio.anysplat_runtime import automatic_view_limit, load_model, preprocess_image, select_inputs, to_viewer_gaussians
+    from studio.anysplat_runtime import automatic_view_limit, load_model, preprocess_image, preprocess_object_image, select_inputs, to_viewer_gaussians
 
     inputs = options["inputs"]
     paths = [directory / item["file"] for item in inputs]
@@ -92,8 +93,27 @@ def anysplat_predict(directory, options, device):
         )
     compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     low_vram = vram_gb <= 8.5
-    progress(directory, 10, f"Preparing {len(selected)} of {len(paths)} uploaded views at 448 x 448")
-    images = torch.stack([preprocess_image(path) for path in selected], dim=0).unsqueeze(0)
+    object_only = bool(options.get("object_only", True))
+    foreground_mask = None
+    mask_coverages = []
+    progress(directory, 8, f"Preparing {len(selected)} of {len(paths)} uploaded views at 448 x 448")
+    if object_only:
+        from studio.foreground import load_session
+
+        progress(directory, 10, "Detecting and framing the main object in every view")
+        session = load_session()
+        prepared, masks = [], []
+        for index, path in enumerate(selected):
+            tensor, mask, coverage = preprocess_object_image(path, session)
+            prepared.append(tensor)
+            masks.append(mask)
+            mask_coverages.append(round(coverage, 4))
+            Image.fromarray(np.uint8(mask.numpy()) * 255).save(directory / f"object-mask-{index}.png")
+        images = torch.stack(prepared, dim=0).unsqueeze(0)
+        foreground_mask = torch.stack(masks).reshape(-1).numpy()
+        del session, prepared, masks
+    else:
+        images = torch.stack([preprocess_image(path) for path in selected], dim=0).unsqueeze(0)
     images = images.to(device=device, dtype=compute_dtype if low_vram else torch.float32)
     profile = " · 8 GB low-memory mode" if low_vram else ""
     progress(directory, 20, f"Loading AnySplat pretrained weights on {torch.cuda.get_device_name(0)}{profile}")
@@ -105,7 +125,7 @@ def anysplat_predict(directory, options, device):
     gc.collect()
     torch.cuda.empty_cache()
     progress(directory, 82, "Converting AnySplat output to portable Gaussian PLY")
-    g = to_viewer_gaussians(gaussians)
+    g = to_viewer_gaussians(gaussians, foreground_mask=foreground_mask)
     predicted_count = int(gaussians.means.shape[1])
     del gaussians
     gc.collect()
@@ -128,7 +148,10 @@ def anysplat_predict(directory, options, device):
         "free_vram_gb_at_start": round(free_vram_gb, 1),
         "low_vram_mode": low_vram,
         "predicted_gaussians": predicted_count,
-        "limitation": "Feed-forward reconstruction from uncalibrated overlapping views. Regions never seen in any input can remain incomplete; output is capped at two million strongest Gaussians for portable viewing.",
+        "object_only": object_only,
+        "foreground_coverage": mask_coverages,
+        "foreground_pixels": int(np.count_nonzero(foreground_mask)) if foreground_mask is not None else None,
+        "limitation": "Object-only mode segments the main subject in every view and excludes background Gaussians. Fine transparent parts or backgrounds similar to the object can still need cleaner source photos; unseen regions remain incomplete.",
     }
 
 

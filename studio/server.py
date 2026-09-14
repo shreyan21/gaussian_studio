@@ -22,6 +22,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from studio.anysplat_runtime import model_ready as anysplat_model_ready
 from studio.config import DATA, DEPTH_DIR, MAX_IMAGES, MAX_PIXELS, MAX_UPLOAD, ROOT
+from studio.foreground import model_ready as foreground_model_ready
 from studio.gaussians import export_scene, make_demo
 
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
@@ -249,7 +250,7 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        return {"app": "Gaussian Scene Studio", "version": "2.1.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "models": {"depth": (DEPTH_DIR / "model.safetensors").is_file(), "anysplat": anysplat_model_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "remote_access": bool(access_token)}
+        return {"app": "Gaussian Scene Studio", "version": "2.2.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "models": {"depth": (DEPTH_DIR / "model.safetensors").is_file(), "anysplat": anysplat_model_ready(), "foreground": foreground_model_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "remote_access": bool(access_token)}
 
     @app.post("/api/jobs", status_code=202)
     async def upload(
@@ -260,6 +261,7 @@ def create_app(data_dir=None):
         resolution: int = Form(512),
         depth_strength: float = Form(1.0),
         view_limit: str = Form("auto"),
+        object_only: bool = Form(True),
     ):
         if engine not in ("depth", "anysplat") or device not in ("auto", "cpu", "cuda"):
             raise HTTPException(422, "Invalid model or device")
@@ -311,7 +313,7 @@ def create_app(data_dir=None):
             {"file": "input.png" if i == 0 else f"input_{i}.png", "original_name": Path(names[i].replace("\\", "/")).name[:100]}
             for i in range(len(cleaned))
         ]
-        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "view_limit": view_limit}
+        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "view_limit": view_limit, "object_only": bool(object_only and engine == "anysplat")}
         return app.state.jobs.create(cleaned, names, options)
 
     @app.get("/api/jobs")
@@ -330,8 +332,9 @@ def create_app(data_dir=None):
     @app.get("/api/jobs/{job_id}/files/{filename}")
     def asset(job_id: str, filename: str):
         fixed = {"scene.ply", "scene.gsb", "scene.json", "depth.png", "thumbnail.jpg", "worker.log"}
+        is_mask = bool(re.fullmatch(r"object-mask-(?:[0-9]|1[0-5])\.png", filename))
         is_input = filename == "input.png" or bool(re.fullmatch(r"input_(?:[1-9]|1[0-5])\.png", filename))
-        if filename not in fixed and not is_input:
+        if filename not in fixed and not is_input and not is_mask:
             raise HTTPException(404, "File not found")
         folder = app.state.jobs.path(job_id)
         job = app.state.jobs.read(job_id)

@@ -1,10 +1,12 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 from PIL import Image
 
 from studio.anysplat_runtime import automatic_view_limit, preprocess_image, select_inputs, to_viewer_gaussians
+from studio.foreground import focus_object
 
 
 def fake_gaussians(count=4):
@@ -30,6 +32,16 @@ def test_anysplat_conversion_keeps_strongest_with_bounded_output():
     assert np.all(converted[:, 3] >= 0.7)
 
 
+def test_anysplat_conversion_removes_background_pixels():
+    converted = to_viewer_gaussians(fake_gaussians(), foreground_mask=[True, False, True, False])
+    assert len(converted) == 2
+
+
+def test_anysplat_conversion_rejects_misaligned_foreground_mask():
+    with pytest.raises(ValueError, match="Foreground mask"):
+        to_viewer_gaussians(fake_gaussians(), foreground_mask=[True])
+
+
 def test_auto_budget_and_even_input_sampling():
     paths = list(range(16))
     assert automatic_view_limit(5.0, 16) == 1
@@ -46,3 +58,17 @@ def test_preprocess_is_rgb_float_448_square(tmp_path):
     assert tensor.shape == (3, 448, 448)
     assert tensor.dtype == torch.float32
     assert 0 <= tensor.min() <= tensor.max() <= 1
+
+
+def test_object_focus_crops_subject_and_neutralizes_background():
+    image = Image.new("RGB", (240, 120), "white")
+    mask = Image.new("L", image.size, 0)
+    for x in range(80, 160):
+        for y in range(35, 85):
+            image.putpixel((x, y), (180, 30, 20))
+            mask.putpixel((x, y), 255)
+    focused, foreground, coverage = focus_object(image, mask)
+    assert focused.size == (448, 448)
+    assert foreground.shape == (448, 448)
+    assert 0.12 < coverage < 0.15
+    assert focused.getpixel((0, 0)) == (127, 127, 127)
