@@ -21,6 +21,7 @@ Date: 2026-09-13
 - Auto/all/explicit view budgets are validated and saved.
 - Auto-safe uses currently free VRAM, not only total installed VRAM.
 - RTX A1000 low-memory loading uses 16-bit model weights and refuses inference below 5.5 GB currently free VRAM.
+- The setup smoke test now uses the same 16-bit model-loading path as normal inference on an 8 GB GPU; it no longer creates a full-precision-only setup failure.
 - PLY round trips and AnySplat output conversion are covered.
 - Multi-image assets beyond the old four-image limit are retrievable safely.
 - Upload hardening, cross-origin blocking, jobs, cancellation, history, and recovery remain covered.

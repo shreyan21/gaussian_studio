@@ -67,7 +67,7 @@ def depth_predict(image, directory, options, device):
 
 def anysplat_predict(directory, options, device):
     import torch
-    from studio.anysplat_runtime import automatic_view_limit, load_model, preprocess_image, preprocess_object_image, select_inputs, to_viewer_gaussians
+    from studio.anysplat_runtime import automatic_view_limit, cuda_inference_profile, load_model, preprocess_image, preprocess_object_image, select_inputs, to_viewer_gaussians
 
     inputs = options["inputs"]
     paths = [directory / item["file"] for item in inputs]
@@ -91,8 +91,7 @@ def anysplat_predict(directory, options, device):
             f"AnySplat needs at least 5.5 GB of free GPU memory; only {free_vram_gb:.1f} GB is free. "
             "Close browser tabs, QGIS and other GPU-heavy programs, then retry with Auto-safe."
         )
-    compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    low_vram = vram_gb <= 8.5
+    low_vram, compute_dtype = cuda_inference_profile(torch, vram_gb)
     object_only = bool(options.get("object_only", True))
     foreground_mask = None
     mask_coverages = []

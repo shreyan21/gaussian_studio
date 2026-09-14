@@ -5,7 +5,7 @@ import pytest
 import torch
 from PIL import Image
 
-from studio.anysplat_runtime import automatic_view_limit, preprocess_image, select_inputs, to_viewer_gaussians
+from studio.anysplat_runtime import automatic_view_limit, cuda_inference_profile, preprocess_image, select_inputs, to_viewer_gaussians
 from studio.foreground import focus_object
 
 
@@ -62,6 +62,18 @@ def test_auto_budget_and_even_input_sampling():
     assert automatic_view_limit(16.0, 16) == 6
     assert automatic_view_limit(48.0, 16) == 16
     assert select_inputs(paths, 4) == [0, 5, 10, 15]
+
+
+def test_cuda_profile_uses_16_bit_weights_on_8gb_gpu():
+    low_vram, dtype = cuda_inference_profile(torch, 8.0)
+    assert low_vram is True
+    assert dtype in (torch.bfloat16, torch.float16)
+
+
+def test_cuda_profile_keeps_full_precision_weights_on_larger_gpu():
+    low_vram, dtype = cuda_inference_profile(torch, 12.0)
+    assert low_vram is False
+    assert dtype in (torch.bfloat16, torch.float16)
 
 
 def test_preprocess_is_rgb_float_448_square(tmp_path):

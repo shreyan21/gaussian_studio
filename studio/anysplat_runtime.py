@@ -169,6 +169,12 @@ def automatic_view_limit(available_vram_gb: float, uploaded: int) -> int:
     return max(1, min(uploaded, safe))
 
 
+def cuda_inference_profile(torch, total_vram_gb: float):
+    """Return the model/input precision used for the detected CUDA memory size."""
+    compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    return total_vram_gb <= 8.5, compute_dtype
+
+
 def load_model(device="cuda", parameter_dtype=None):
     import torch
     from safetensors.torch import load_file
