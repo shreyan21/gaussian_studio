@@ -110,7 +110,7 @@ def anysplat_predict(directory, options, device):
             mask_coverages.append(round(coverage, 4))
             Image.fromarray(np.uint8(mask.numpy()) * 255).save(directory / f"object-mask-{index}.png")
         images = torch.stack(prepared, dim=0).unsqueeze(0)
-        foreground_mask = torch.stack(masks).reshape(-1).numpy()
+        foreground_mask = torch.stack(masks).numpy()
         del session, prepared, masks
     else:
         images = torch.stack([preprocess_image(path) for path in selected], dim=0).unsqueeze(0)
@@ -121,13 +121,13 @@ def anysplat_predict(directory, options, device):
     progress(directory, 42, f"Jointly reconstructing from {len(selected)} uncalibrated views")
     with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=compute_dtype):
         gaussians, poses = model.inference(images)
-    del images, poses, model
+    del images, model
     gc.collect()
     torch.cuda.empty_cache()
     progress(directory, 82, "Converting AnySplat output to portable Gaussian PLY")
-    g = to_viewer_gaussians(gaussians, foreground_mask=foreground_mask)
+    g = to_viewer_gaussians(gaussians, foreground_mask=foreground_mask, camera_poses=poses)
     predicted_count = int(gaussians.means.shape[1])
-    del gaussians
+    del gaussians, poses
     gc.collect()
     torch.cuda.empty_cache()
     return g, {

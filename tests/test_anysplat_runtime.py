@@ -42,6 +42,19 @@ def test_anysplat_conversion_rejects_misaligned_foreground_mask():
         to_viewer_gaussians(fake_gaussians(), foreground_mask=[True])
 
 
+def test_anysplat_conversion_projects_image_masks_through_predicted_cameras():
+    masks = np.zeros((2, 5, 5), dtype=bool)
+    masks[:, 2, 2] = True
+    poses = {
+        "extrinsic": torch.eye(4).reshape(1, 1, 4, 4).repeat(1, 2, 1, 1),
+        "intrinsic": torch.tensor([[[[1.0, 0.0, 0.5], [0.0, 1.0, 0.5], [0.0, 0.0, 1.0]]]]).repeat(1, 2, 1, 1),
+    }
+    gaussians = fake_gaussians(2)
+    gaussians.means = torch.tensor([[[0.0, 0.0, 1.0], [2.0, 0.0, 1.0]]])
+    converted = to_viewer_gaussians(gaussians, foreground_mask=masks, camera_poses=poses)
+    assert len(converted) == 1
+
+
 def test_auto_budget_and_even_input_sampling():
     paths = list(range(16))
     assert automatic_view_limit(5.0, 16) == 1

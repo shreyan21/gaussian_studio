@@ -224,7 +224,43 @@ def load_model(device="cuda", parameter_dtype=None):
     return model
 
 
-def to_viewer_gaussians(gaussians, max_gaussians=2_000_000, foreground_mask=None):
+def _project_foreground(means, foreground_masks, camera_poses):
+    """Keep 3D points whose projection lands inside a foreground mask."""
+    masks = np.asarray(foreground_masks, dtype=bool)
+    if masks.ndim != 3:
+        raise ValueError("Foreground masks must have shape (views, height, width).")
+    if not camera_poses or "extrinsic" not in camera_poses or "intrinsic" not in camera_poses:
+        raise ValueError("Camera poses are required to map foreground masks to 3D Gaussians.")
+
+    def as_numpy(value):
+        return value.detach().float().cpu().numpy() if hasattr(value, "detach") else np.asarray(value)
+
+    cameras = as_numpy(camera_poses["extrinsic"])[0]
+    intrinsics = as_numpy(camera_poses["intrinsic"])[0]
+    if len(cameras) != len(masks) or len(intrinsics) != len(masks):
+        raise ValueError("Foreground mask and camera view counts do not match.")
+
+    height, width = masks.shape[1:]
+    homogeneous = np.concatenate((means, np.ones((len(means), 1), dtype=means.dtype)), axis=1)
+    keep = np.zeros(len(means), dtype=bool)
+    for mask, camera_to_world, intrinsic in zip(masks, cameras, intrinsics):
+        camera_points = (np.linalg.inv(camera_to_world) @ homogeneous.T).T
+        depth = camera_points[:, 2]
+        visible = depth > 1e-6
+        safe_depth = np.where(visible, depth, 1.0)
+        x = intrinsic[0, 0] * camera_points[:, 0] / safe_depth + intrinsic[0, 2]
+        y = intrinsic[1, 1] * camera_points[:, 1] / safe_depth + intrinsic[1, 2]
+        px = np.rint(x * (width - 1)).astype(np.int64)
+        py = np.rint(y * (height - 1)).astype(np.int64)
+        inside = visible & (px >= 0) & (px < width) & (py >= 0) & (py < height)
+        indices = np.flatnonzero(inside)
+        keep[indices] |= mask[py[indices], px[indices]]
+    return keep
+
+
+def to_viewer_gaussians(
+    gaussians, max_gaussians=2_000_000, foreground_mask=None, camera_poses=None
+):
     """Convert official AnySplat tensors to the app's viewer/PLY array."""
     means = gaussians.means[0].detach().float().cpu().numpy()
     scales = gaussians.scales[0].detach().float().cpu().numpy()
@@ -236,9 +272,13 @@ def to_viewer_gaussians(gaussians, max_gaussians=2_000_000, foreground_mask=None
     valid &= np.isfinite(rotations).all(1) & np.isfinite(harmonics).all(1) & np.isfinite(opacities)
     valid &= (scales > 0).all(1) & (opacities > 0.005)
     if foreground_mask is not None:
-        foreground = np.asarray(foreground_mask, dtype=bool).reshape(-1)
-        if len(foreground) != len(valid):
-            raise ValueError(f"Foreground mask has {len(foreground)} pixels for {len(valid)} predicted Gaussians.")
+        masks = np.asarray(foreground_mask, dtype=bool)
+        if masks.ndim == 1:
+            foreground = masks
+            if len(foreground) != len(valid):
+                raise ValueError(f"Foreground mask has {len(foreground)} pixels for {len(valid)} predicted Gaussians.")
+        else:
+            foreground = _project_foreground(means, masks, camera_poses)
         valid &= foreground
     indices = np.flatnonzero(valid)
     if len(indices) > max_gaussians:
