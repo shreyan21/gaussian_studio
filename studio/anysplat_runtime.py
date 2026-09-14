@@ -231,7 +231,14 @@ def load_model(device="cuda", parameter_dtype=None):
 
 
 def _project_foreground(means, foreground_masks, camera_poses):
-    """Keep 3D points whose projection lands inside a foreground mask."""
+    """Keep 3D points supported by foreground masks across visible views.
+
+    A union of the per-view masks is too permissive: a background surface only
+    has to overlap the subject in one camera to survive.  Requiring a 60%
+    majority among cameras where the point projects into the image removes
+    those cross-view sheets while retaining points that are visible in only one
+    input view.
+    """
     masks = np.asarray(foreground_masks, dtype=bool)
     if masks.ndim != 3:
         raise ValueError("Foreground masks must have shape (views, height, width).")
@@ -248,7 +255,8 @@ def _project_foreground(means, foreground_masks, camera_poses):
 
     height, width = masks.shape[1:]
     homogeneous = np.concatenate((means, np.ones((len(means), 1), dtype=means.dtype)), axis=1)
-    keep = np.zeros(len(means), dtype=bool)
+    visible_votes = np.zeros(len(means), dtype=np.uint16)
+    foreground_votes = np.zeros(len(means), dtype=np.uint16)
     for mask, camera_to_world, intrinsic in zip(masks, cameras, intrinsics):
         camera_points = (np.linalg.inv(camera_to_world) @ homogeneous.T).T
         depth = camera_points[:, 2]
@@ -260,8 +268,10 @@ def _project_foreground(means, foreground_masks, camera_poses):
         py = np.rint(y * (height - 1)).astype(np.int64)
         inside = visible & (px >= 0) & (px < width) & (py >= 0) & (py < height)
         indices = np.flatnonzero(inside)
-        keep[indices] |= mask[py[indices], px[indices]]
-    return keep
+        visible_votes[indices] += 1
+        foreground_votes[indices] += mask[py[indices], px[indices]]
+    required_votes = np.maximum(1, np.ceil(visible_votes * 0.6)).astype(np.uint16)
+    return (visible_votes > 0) & (foreground_votes >= required_votes)
 
 
 def to_viewer_gaussians(
