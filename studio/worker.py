@@ -65,12 +65,18 @@ def depth_predict(image, directory, options, device):
     }
 
 
-def filter_pixel_gaussians(gaussians, foreground_mask):
-    """Keep every predicted depth layer belonging to a foreground pixel."""
-    mask = np.asarray(foreground_mask, dtype=bool).reshape(-1)
-    if not mask.size or len(gaussians) % mask.size:
-        raise RuntimeError("SHARP output does not match the foreground mask dimensions.")
-    layer_count = len(gaussians) // mask.size
+def filter_pixel_gaussians(gaussians, foreground_mask, layer_count=2):
+    """Resize a source mask to SHARP's output grid and keep every depth layer."""
+    if layer_count < 1 or len(gaussians) % layer_count:
+        raise RuntimeError("SHARP output does not match its configured depth layers.")
+    pixel_count = len(gaussians) // layer_count
+    output_side = int(round(np.sqrt(pixel_count)))
+    if output_side * output_side != pixel_count:
+        raise RuntimeError("SHARP output is not a square pixel grid.")
+    mask_image = Image.fromarray(np.uint8(np.asarray(foreground_mask, dtype=bool)) * 255)
+    mask = np.asarray(
+        mask_image.resize((output_side, output_side), Image.Resampling.BOX), dtype=np.uint8
+    ).reshape(-1) > 0
     return gaussians[np.tile(mask, layer_count)], layer_count
 
 
@@ -104,8 +110,9 @@ def sharp_predict(image, directory, options, device):
 
     progress(directory, 15, "Loading Apple SHARP weights on " + device.upper())
     state = torch.load(str(SHARP_WEIGHTS), map_location="cpu", weights_only=True, mmap=True)
+    predictor_params = PredictorParams()
     with torch.device("meta"):
-        predictor = create_predictor(PredictorParams())
+        predictor = create_predictor(predictor_params)
     predictor.load_state_dict(state, strict=True, assign=True)
     del state
     predictor.eval().to(device)
@@ -139,7 +146,9 @@ def sharp_predict(image, directory, options, device):
     result[:, 12:15] = np.where(linear <= 0.0031308, linear * 12.92, 1.055 * linear ** (1 / 2.4) - 0.055)
     layer_count = None
     if foreground_mask is not None:
-        result, layer_count = filter_pixel_gaussians(result, foreground_mask)
+        result, layer_count = filter_pixel_gaussians(
+            result, foreground_mask, predictor_params.initializer.num_layers
+        )
     return result, {
         "fov_y": float(np.degrees(2 * np.arctan(height / (2 * focal)))),
         "image_size": [width, height], "source_image_size": source_size,

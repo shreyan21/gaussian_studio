@@ -12,15 +12,20 @@ from studio.worker import filter_pixel_gaussians
 
 def test_foreground_mask_keeps_all_sharp_layers_in_pixel_order():
     gaussians = np.arange(16 * 8, dtype=np.float32).reshape(8, 16)
-    mask = np.array([[True, False], [False, True]])
+    mask = np.array([
+        [True, True, False, False],
+        [True, True, False, False],
+        [False, False, True, True],
+        [False, False, True, True],
+    ])
     filtered, layers = filter_pixel_gaussians(gaussians, mask)
     assert layers == 2
     np.testing.assert_array_equal(filtered, gaussians[[0, 3, 4, 7]])
 
 
 def test_foreground_mask_rejects_mismatched_output():
-    with pytest.raises(RuntimeError, match="does not match"):
-        filter_pixel_gaussians(np.zeros((7, 16), dtype=np.float32), np.ones((2, 2), dtype=bool))
+    with pytest.raises(RuntimeError, match="square pixel grid"):
+        filter_pixel_gaussians(np.zeros((6, 16), dtype=np.float32), np.ones((2, 2), dtype=bool))
 
 
 @pytest.mark.skipif(not (SHARP_SOURCE / "sharp" / "models" / "__init__.py").is_file(), reason="Optional SHARP source not installed")
