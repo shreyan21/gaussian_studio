@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from studio.config import DEPTH_DIR
+from studio.config import DEPTH_DIR, SHARP_SOURCE, SHARP_WEIGHTS
 from studio.gaussians import export_scene, from_depth
 
 # Reduce fragmentation in the short-lived CUDA worker. This must be set before
@@ -62,6 +62,64 @@ def depth_predict(image, directory, options, device):
         "limitation": "Relative-depth reconstruction of visible surfaces. Hidden sides are not generated; scale is not metric.",
         "licence": "Apache-2.0 model",
         "device": device,
+    }
+
+
+def sharp_predict(image, directory, options, device):
+    import psutil
+    import torch
+    import torch.nn.functional as F
+
+    if not SHARP_WEIGHTS.is_file() or not (SHARP_SOURCE / "sharp" / "models").is_dir():
+        raise RuntimeError("SHARP is not installed. Install requirements-sharp.txt and run scripts/download_models.py --model sharp.")
+    if device == "cpu" and psutil.virtual_memory().total < 14 * 1024**3:
+        raise RuntimeError("SHARP CPU mode needs at least 14 GB RAM. Use CUDA or the lightweight depth model.")
+    sys.path.insert(0, str(SHARP_SOURCE))
+    from sharp.models import PredictorParams, create_predictor
+    from sharp.utils.gaussians import Gaussians3D, unproject_gaussians
+
+    progress(directory, 15, "Loading Apple SHARP weights on " + device.upper())
+    state = torch.load(str(SHARP_WEIGHTS), map_location="cpu", weights_only=True, mmap=True)
+    with torch.device("meta"):
+        predictor = create_predictor(PredictorParams())
+    predictor.load_state_dict(state, strict=True, assign=True)
+    del state
+    predictor.eval().to(device)
+    width, height = image.size
+    focal = max(width, height) * 0.85
+    input_tensor = torch.from_numpy(np.asarray(image).copy()).to(device).float().permute(2, 0, 1)[None] / 255
+    input_tensor = F.interpolate(input_tensor, (1536, 1536), mode="bilinear", align_corners=True)
+    factor = torch.tensor([focal / width], dtype=torch.float32, device=device)
+    progress(directory, 40, "Predicting 3D Gaussians from the source photograph")
+    with torch.inference_mode(), torch.autocast(device_type=device, dtype=torch.float16, enabled=device == "cuda"):
+        raw = predictor(input_tensor, factor)
+    raw = Gaussians3D(*(tensor.detach().float().cpu() for tensor in raw))
+    del predictor, input_tensor, factor
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    progress(directory, 70, "Unprojecting Gaussians into the 3D camera view")
+    intrinsics = torch.tensor([[focal, 0, width / 2, 0], [0, focal, height / 2, 0], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=torch.float32)
+    intrinsics[0] *= 1536 / width
+    intrinsics[1] *= 1536 / height
+    with torch.inference_mode():
+        gaussian = unproject_gaussians(raw, torch.eye(4), intrinsics, (1536, 1536))
+    means = gaussian.mean_vectors.reshape(-1, 3).numpy()
+    result = np.zeros((len(means), 16), np.float32)
+    result[:, :3] = means * [1, -1, -1]
+    result[:, 3] = gaussian.opacities.reshape(-1).numpy()
+    result[:, 4:7] = gaussian.singular_values.reshape(-1, 3).numpy()
+    quaternion = gaussian.quaternions.reshape(-1, 4).numpy()
+    result[:, 8:12] = np.stack((-quaternion[:, 1], quaternion[:, 0], -quaternion[:, 3], quaternion[:, 2]), axis=-1)
+    linear = np.clip(gaussian.colors.reshape(-1, 3).numpy(), 0, 1)
+    result[:, 12:15] = np.where(linear <= 0.0031308, linear * 12.92, 1.055 * linear ** (1 / 2.4) - 0.055)
+    return result, {
+        "fov_y": float(np.degrees(2 * np.arctan(height / (2 * focal)))),
+        "image_size": [width, height], "engine": "Apple SHARP", "method": "sharp", "device": device,
+        "precision": "CUDA mixed float16; CPU float32 postprocessing" if device == "cuda" else "float32",
+        "licence": "Apple ML Research Model: non-commercial scientific research only",
+        "view_limits": {"yaw_degrees": 30, "pitch_degrees": 18},
+        "limitation": "Single-image prediction supports nearby novel views only. Rotation is intentionally clamped to ±30° horizontally and ±18° vertically because unseen sides are not reconstructed.",
     }
 
 
@@ -170,12 +228,14 @@ def main():
                 first = options.get("inputs", [{"file": "input.png"}])[0]
                 with Image.open(directory / first["file"]) as source:
                     image = source.convert("RGB")
-                g, meta = depth_predict(image, directory, options, device)
+                g, meta = sharp_predict(image, directory, options, device) if options["engine"] == "sharp" else depth_predict(image, directory, options, device)
         except torch.cuda.OutOfMemoryError as exc:
             gc.collect()
             torch.cuda.empty_cache()
             if options["engine"] == "anysplat":
                 message = "AnySplat ran out of GPU memory. On an RTX A1000, use Auto-safe or exactly 2 views and close QGIS/browser GPU-heavy work. No fallback output was substituted."
+            elif options["engine"] == "sharp":
+                message = "SHARP ran out of GPU memory. Close GPU-heavy programs or use a larger CUDA GPU. No fallback output was substituted."
             else:
                 message = "The depth model ran out of GPU memory. Close GPU-heavy programs, reduce Detail, or select CPU. No fallback output was substituted."
             raise RuntimeError(message) from exc

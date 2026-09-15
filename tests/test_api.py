@@ -1,6 +1,7 @@
 import io
 import json
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,9 +28,9 @@ def test_home_and_procedural_viewer_without_models(client):
     assert client.get("/static/renderer.js").status_code == 200
     health = client.get("/api/health").json()
     assert health["app"] == "Gaussian Scene Studio"
-    assert health["version"] == "2.2.0"
+    assert health["version"] == "2.3.0"
     assert health["max_images"] == 16
-    assert set(health["models"]) == {"depth", "anysplat", "foreground"}
+    assert set(health["models"]) == {"depth", "sharp", "anysplat", "foreground"}
     assert client.get("/api/demo/scene.gsb").content[:4] == b"GSS1"
     assert client.get("/api/demo/scene.json").json()["method"] == "demo"
 
@@ -162,6 +163,24 @@ def test_engine_image_count_contract(client):
     two = one + [("images", ("two.png", photo(), "image/png"))]
     assert client.post("/api/jobs", files=one, data={"engine": "anysplat"}).status_code == 422
     assert client.post("/api/jobs", files=two, data={"engine": "depth"}).status_code == 422
+    assert client.post("/api/jobs", files=two, data={"engine": "sharp", "research_use": "true"}).status_code == 422
+
+
+def test_sharp_requires_research_acknowledgement(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(Jobs, "run", lambda *args: None)
+    denied = client.post("/api/jobs", files={"image": ("rose.png", photo(), "image/png")}, data={"engine": "sharp"})
+    assert denied.status_code == 422
+    accepted = client.post("/api/jobs", files={"image": ("rose.png", photo(), "image/png")}, data={"engine": "sharp", "research_use": "true"})
+    assert accepted.status_code == 202
+    request = json.loads((tmp_path / "jobs" / accepted.json()["id"] / "request.json").read_text(encoding="utf-8"))
+    assert request["research_use"] is True
+
+
+def test_sharp_viewer_has_hard_camera_limits():
+    renderer = (Path(__file__).parents[1] / "static" / "renderer.js").read_text(encoding="utf-8")
+    assert "clampView()" in renderer
+    assert "yaw_degrees" in renderer
+    assert "pitch_degrees" in renderer
 
 
 def test_stale_running_jobs_recovered(tmp_path):

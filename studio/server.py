@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from studio.anysplat_runtime import model_ready as anysplat_model_ready
-from studio.config import DATA, DEPTH_DIR, MAX_IMAGES, MAX_PIXELS, MAX_UPLOAD, ROOT
+from studio.config import DATA, DEPTH_DIR, MAX_IMAGES, MAX_PIXELS, MAX_UPLOAD, ROOT, SHARP_SOURCE, SHARP_WEIGHTS
 from studio.foreground import model_ready as foreground_model_ready
 from studio.gaussians import export_scene, make_demo
 
@@ -250,7 +250,8 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        return {"app": "Gaussian Scene Studio", "version": "2.2.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "models": {"depth": (DEPTH_DIR / "model.safetensors").is_file(), "anysplat": anysplat_model_ready(), "foreground": foreground_model_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "remote_access": bool(access_token)}
+        sharp_ready = SHARP_WEIGHTS.is_file() and (SHARP_SOURCE / "sharp" / "models").is_dir()
+        return {"app": "Gaussian Scene Studio", "version": "2.3.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "models": {"depth": (DEPTH_DIR / "model.safetensors").is_file(), "sharp": sharp_ready, "anysplat": anysplat_model_ready(), "foreground": foreground_model_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "remote_access": bool(access_token)}
 
     @app.post("/api/jobs", status_code=202)
     async def upload(
@@ -262,9 +263,12 @@ def create_app(data_dir=None):
         depth_strength: float = Form(1.0),
         view_limit: str = Form("auto"),
         object_only: bool = Form(True),
+        research_use: bool = Form(False),
     ):
-        if engine not in ("depth", "anysplat") or device not in ("auto", "cpu", "cuda"):
+        if engine not in ("depth", "sharp", "anysplat") or device not in ("auto", "cpu", "cuda"):
             raise HTTPException(422, "Invalid model or device")
+        if engine == "sharp" and not research_use:
+            raise HTTPException(422, "Confirm SHARP will be used only for non-commercial scientific research")
         if resolution not in (384, 512, 768) or not 0.25 <= depth_strength <= 1.5:
             raise HTTPException(422, "Invalid quality or depth range")
         if view_limit not in ("auto", "all", "2", "4", "6", "8", "10", "12", "16"):
@@ -278,8 +282,8 @@ def create_app(data_dir=None):
             raise HTTPException(422, "Upload at least one image")
         if len(uploads) > MAX_IMAGES:
             raise HTTPException(422, f"Upload at most {MAX_IMAGES} images")
-        if engine == "depth" and len(uploads) != 1:
-            raise HTTPException(422, "Depth Anything accepts one image; choose AnySplat for multiple images")
+        if engine in ("depth", "sharp") and len(uploads) != 1:
+            raise HTTPException(422, "Depth Anything and SHARP accept exactly one image; choose AnySplat for multiple images")
         if engine == "anysplat" and len(uploads) < 2:
             raise HTTPException(422, "AnySplat needs at least two overlapping images")
 
@@ -313,7 +317,7 @@ def create_app(data_dir=None):
             {"file": "input.png" if i == 0 else f"input_{i}.png", "original_name": Path(names[i].replace("\\", "/")).name[:100]}
             for i in range(len(cleaned))
         ]
-        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "view_limit": view_limit, "object_only": bool(object_only and engine == "anysplat")}
+        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "view_limit": view_limit, "object_only": bool(object_only and engine == "anysplat"), "research_use": bool(research_use and engine == "sharp")}
         return app.state.jobs.create(cleaned, names, options)
 
     @app.get("/api/jobs")

@@ -1,6 +1,8 @@
 # Gaussian Scene Studio
 
-Local Python app for reconstructing an interactive 3D Gaussian scene from overlapping photographs. The primary backend is AnySplat. A single-image Depth Anything preview remains available when only one photograph exists.
+Local Python app for reconstructing an interactive 3D Gaussian scene. Apple SHARP is the clearest single-image research mode; AnySplat handles overlapping multi-view photographs, and Depth Anything remains a lightweight fallback.
+
+SHARP scenes intentionally stop at ±30° horizontal and ±18° vertical rotation. A single photograph cannot reveal the back of an object, so the viewer blocks movement beyond the useful predicted novel-view range instead of displaying broken geometry.
 
 AnySplat enables **Isolate main object** by default: each view is segmented and cropped around the focused subject, neutral background pixels are withheld from the exported Gaussians, and rotations in the viewer show the reconstructed object instead of the surrounding scene.
 
@@ -29,6 +31,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA
 ```
 
 Setup creates `.venv`, installs pinned dependencies, downloads the AnySplat weights, verifies their SHA-256 checksum, and runs a real two-view CUDA inference smoke test. First setup needs internet and several GB of free disk space.
+
+To additionally install SHARP, explicitly accept its research-only use and run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA -IncludeSharp
+```
 
 If `D:\GaussianSceneStudio` already exists, update instead:
 
@@ -98,6 +106,7 @@ The four shoe photographs previously tested moved the shoe relative to the backg
 
 ## Backend modes
 
+- **Apple SHARP:** one image; clear nearby novel views, with hard camera limits. The model is restricted to non-commercial scientific research.
 - **AnySplat:** two or more overlapping views; produces a Gaussian PLY and interactive viewer.
 - **Depth Anything:** one-image geometric preview; cannot reconstruct unseen sides.
 

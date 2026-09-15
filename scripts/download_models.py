@@ -6,7 +6,24 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from studio.config import ANYSPLAT_DIR, ANYSPLAT_ID, ANYSPLAT_REVISION, ANYSPLAT_SHA256, DEPTH_DIR, DEPTH_ID, DEPTH_REVISION, FOREGROUND_DIR, FOREGROUND_MODEL, FOREGROUND_SHA256, FOREGROUND_URL
+from studio.config import ANYSPLAT_DIR, ANYSPLAT_ID, ANYSPLAT_REVISION, ANYSPLAT_SHA256, DEPTH_DIR, DEPTH_ID, DEPTH_REVISION, FOREGROUND_DIR, FOREGROUND_MODEL, FOREGROUND_SHA256, FOREGROUND_URL, SHARP_SHA256, SHARP_URL, SHARP_WEIGHTS
+
+
+def download_sharp():
+    import urllib.request
+    SHARP_WEIGHTS.parent.mkdir(parents=True, exist_ok=True)
+    temporary = SHARP_WEIGHTS.with_suffix(".pt.part")
+    if not SHARP_WEIGHTS.is_file():
+        print("Downloading Apple SHARP checkpoint (~2.8 GB). Research use only.", flush=True)
+        urllib.request.urlretrieve(SHARP_URL, temporary)
+        temporary.replace(SHARP_WEIGHTS)
+    print("Verifying SHARP checkpoint SHA-256...", flush=True)
+    with SHARP_WEIGHTS.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    if digest != SHARP_SHA256:
+        SHARP_WEIGHTS.unlink(missing_ok=True)
+        raise RuntimeError("SHARP checkpoint SHA-256 mismatch. Retry the download.")
+    print("SHARP model ready:", SHARP_WEIGHTS)
 
 
 def download_depth():
@@ -67,10 +84,14 @@ def download_foreground():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=["depth", "anysplat", "foreground", "all"], default="depth")
+    parser.add_argument("--model", choices=["depth", "sharp", "anysplat", "foreground", "all"], default="depth")
     args = parser.parse_args()
     if args.model in ("depth", "all"):
         download_depth()
+    # SHARP is excluded from "all": its checkpoint has a separate
+    # research-only licence and must be selected explicitly.
+    if args.model == "sharp":
+        download_sharp()
     if args.model in ("anysplat", "all"):
         download_anysplat()
     if args.model in ("foreground", "all"):

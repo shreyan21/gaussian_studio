@@ -10,9 +10,10 @@ async function request(url,options={}){
  return response;
 }
 function setBusy(busy){
- for(const id of ['imageInput','engine','device','resolution','depthStrength','viewLimit','objectOnly'])$(id).disabled=busy;
- $('depthStrength').disabled=busy||$('engine').value==='anysplat';
+ for(const id of ['imageInput','engine','device','resolution','depthStrength','viewLimit','objectOnly','researchUse'])$(id).disabled=busy;
+ $('depthStrength').disabled=busy||$('engine').value!=='depth';
  $('objectOnly').disabled=busy||$('engine').value!=='anysplat';
+ $('researchUse').disabled=busy||$('engine').value!=='sharp';
  $('generateBtn').disabled=busy||!selectedFiles.length;$('generateBtn').textContent=busy?'Reconstructing…':'Create 3D scene ↗';$('progressPanel').hidden=!busy;$('cancelBtn').disabled=false;
 }
 function renderPreviews(){
@@ -48,10 +49,10 @@ for(const type of ['dragenter','dragover'])$('dropZone').addEventListener(type,e
 for(const type of ['dragleave','drop'])$('dropZone').addEventListener(type,e=>{e.preventDefault();$('dropZone').classList.remove('drag-over');});
 $('dropZone').addEventListener('drop',e=>chooseFiles(e.dataTransfer.files));
 $('engine').addEventListener('change',()=>{
- const anysplat=$('engine').value==='anysplat';$('qualityField').hidden=anysplat;$('viewBudgetField').hidden=!anysplat;$('objectFocusField').hidden=!anysplat;$('objectOnly').disabled=!anysplat;$('depthStrength').disabled=anysplat;
+ const engine=$('engine').value,anysplat=engine==='anysplat',sharp=engine==='sharp';$('qualityField').hidden=engine!=='depth';$('viewBudgetField').hidden=!anysplat;$('objectFocusField').hidden=!anysplat;$('researchUseField').hidden=!sharp;$('objectOnly').disabled=!anysplat;$('researchUse').disabled=!sharp;$('depthStrength').disabled=engine!=='depth';
  $('device').querySelector('option[value="cpu"]').disabled=anysplat;
  if(anysplat&&$('device').value==='cpu')$('device').value='auto';
- $('engineDescription').textContent=anysplat?'Jointly predicts cameras and 3D Gaussians from two or more uncalibrated views. NVIDIA CUDA required.':'Predicts depth from one image, then builds a visible Gaussian surface. CPU and CUDA supported.';
+ $('engineDescription').textContent=sharp?'Creates nearby novel views from one image. Dragging stops at ±30° horizontal and ±18° vertical because farther sides were not observed.':anysplat?'Jointly predicts cameras and 3D Gaussians from two or more uncalibrated views. NVIDIA CUDA required.':'Predicts depth from one image, then builds a visible Gaussian surface. CPU and CUDA supported.';
 });
 $('engine').dispatchEvent(new Event('change'));
 $('depthStrength').addEventListener('input',()=>{$('depthValue').textContent=Number($('depthStrength').value).toFixed(2)+'×';});
@@ -64,16 +65,16 @@ async function loadScene(id=null){
   const meta=await metaResponse.json(),buffer=await sceneResponse.arrayBuffer();if(token!==sceneRequest)return;
   viewer.load(buffer,meta);currentScene=id;
   $('sceneTitle').textContent=id?'Reconstructed scene':'Renderer calibration';
-  const isAnySplat=meta.method==='anysplat';
-  $('sceneBadge').textContent=meta.method==='demo'?'SYNTHETIC DEMO':isAnySplat?'ANYSPLAT · MULTI-VIEW':'DEPTH RECONSTRUCTION';
-  $('engineStat').textContent=meta.method==='demo'?'Procedural demo':isAnySplat?`AnySplat · ${meta.input_count} views`:'Depth Anything V2 Small';
+  const isAnySplat=meta.method==='anysplat',isSharp=meta.method==='sharp';
+  $('sceneBadge').textContent=meta.method==='demo'?'SYNTHETIC DEMO':isSharp?'SHARP · LIMITED NOVEL VIEW':isAnySplat?'ANYSPLAT · MULTI-VIEW':'DEPTH RECONSTRUCTION';
+  $('engineStat').textContent=meta.method==='demo'?'Procedural demo':isSharp?'Apple SHARP':isAnySplat?`AnySplat · ${meta.input_count} views`:'Depth Anything V2 Small';
   $('timeStat').textContent=meta.seconds?`${meta.seconds.toFixed(1)} s · ${meta.device.toUpperCase()}`:'—';
   $('splatCount').textContent=number(meta.preview_gaussians);
   $('splatCount').title=`${number(meta.gaussians)} Gaussians in the full PLY export`;
   $('sceneNote').textContent=meta.method==='demo'?'This 3D calibration sculpture lets you test the viewer without a model. Upload a photograph to create your own scene.':(meta.object_only?'Main-object isolation is active. ':'')+meta.limitation+(meta.gaussians>meta.preview_gaussians?` The interactive preview uses ${number(meta.preview_gaussians)} of ${number(meta.gaussians)} Gaussians; the PLY keeps the full result.`:'');
   $('downloadPly').href=`${base}/scene.ply`;$('downloadPly').download=id?'gaussian-scene.ply':'calibration.ply';
   $('depthLink').hidden=meta.method!=='depth';$('depthLink').href=`${base}/depth.png`;$('metadataLink').hidden=!id;$('metadataLink').href=`${base}/scene.json`;
-  document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('selected',b.dataset.view==='front'));
+  document.querySelectorAll('[data-view]').forEach(b=>{b.classList.toggle('selected',b.dataset.view==='front');b.disabled=isSharp&&b.dataset.view!=='front';b.title=b.disabled?'SHARP is limited to nearby views; drag within the allowed range.':'';});
   if(id){const job=await (await request(`/api/jobs/${id}`)).json();if(token===sceneRequest)$('sceneTitle').textContent=job.name;}
  }catch(e){if(token===sceneRequest)showError(`Could not load the 3D scene: ${e.message}`);}
  finally{if(token===sceneRequest)$('viewerLoading').hidden=true;}
@@ -97,7 +98,7 @@ async function refreshHistory(){
   if(!jobs.length){const p=document.createElement('p');p.className='field-note';p.textContent='Your reconstructions will appear here.';list.append(p);}
   for(const job of jobs){
    const button=document.createElement('button');button.className='history-item';button.type='button';const img=document.createElement('img');img.src=`/api/jobs/${job.id}/files/thumbnail.jpg`;img.alt='';img.loading='lazy';
-   const text=document.createElement('div'),title=document.createElement('strong'),sub=document.createElement('span');title.textContent=job.name;sub.textContent=`${job.status} · ${job.engine==='anysplat'?'AnySplat':'Depth Anything'}`;text.append(title,sub);button.append(img,text);
+   const text=document.createElement('div'),title=document.createElement('strong'),sub=document.createElement('span');title.textContent=job.name;sub.textContent=`${job.status} · ${job.engine==='sharp'?'Apple SHARP':job.engine==='anysplat'?'AnySplat':'Depth Anything'}`;text.append(title,sub);button.append(img,text);
    button.addEventListener('click',()=>{clearError();if(job.status==='completed')loadScene(job.id);else if(job.status==='running'){activeJob=job.id;setBusy(true);pollJob();}else showError(job.message,job.id);});list.append(button);
   }
  }catch(e){showError(e.message);}
@@ -105,13 +106,14 @@ async function refreshHistory(){
 
 $('createForm').addEventListener('submit',async e=>{
  e.preventDefault();if(!selectedFiles.length||activeJob)return;clearError();const engine=$('engine').value;
- if(engine==='depth'&&selectedFiles.length!==1){showError('Depth Anything accepts one image. Choose AnySplat for multiple views.');return;}
+ if((engine==='depth'||engine==='sharp')&&selectedFiles.length!==1){showError('SHARP and Depth Anything accept exactly one image. Choose AnySplat for multiple views.');return;}
  if(engine==='anysplat'&&selectedFiles.length<2){showError('AnySplat needs at least two overlapping images.');return;}
- if(health&&!health.models[engine]){showError(engine==='anysplat'?'AnySplat is not installed. Run Setup NVIDIA Workstation.cmd from the app folder, then click refresh.':'Download the depth model first: run .venv\\Scripts\\python.exe scripts\\download_models.py --model depth from the app folder, then click refresh.');return;}
+ if(engine==='sharp'&&!$('researchUse').checked){showError('Confirm non-commercial scientific research use before running Apple SHARP.');return;}
+ if(health&&!health.models[engine]){showError(engine==='sharp'?'SHARP is not installed. Install requirements-sharp.txt and run scripts\\download_models.py --model sharp.':engine==='anysplat'?'AnySplat is not installed. Run Setup NVIDIA Workstation.cmd from the app folder, then click refresh.':'Download the depth model first: run .venv\\Scripts\\python.exe scripts\\download_models.py --model depth from the app folder, then click refresh.');return;}
  if(engine==='anysplat'&&$('objectOnly').checked&&health&&!health.models.foreground){showError('Foreground isolation is not installed. Rerun Setup NVIDIA Workstation.cmd, then click refresh.');return;}
  if(engine==='anysplat'&&health?.hardware.status!=='checking'&&!health?.hardware.cuda){showError('AnySplat requires NVIDIA CUDA. Run Setup NVIDIA Workstation.cmd on the office workstation.');return;}
  if($('device').value==='cuda'&&health?.hardware.status!=='checking'&&!health?.hardware.cuda){showError('CUDA is not available in this Python environment. Select CPU or Auto for Depth Anything.');return;}
- const data=new FormData();for(const item of selectedFiles)data.append('images',item.file,item.file.name);data.append('engine',engine);data.append('device',$('device').value);data.append('resolution',$('resolution').value);data.append('depth_strength',$('depthStrength').value);data.append('view_limit',$('viewLimit').value);data.append('object_only',$('objectOnly').checked);
+ const data=new FormData();for(const item of selectedFiles)data.append('images',item.file,item.file.name);data.append('engine',engine);data.append('device',$('device').value);data.append('resolution',$('resolution').value);data.append('depth_strength',$('depthStrength').value);data.append('view_limit',$('viewLimit').value);data.append('object_only',$('objectOnly').checked);data.append('research_use',$('researchUse').checked);
  setBusy(true);$('progressBar').value=0;$('progressPercent').textContent='0%';$('progressMessage').textContent='Uploading to your local Python server…';
  try{const job=await (await request('/api/jobs',{method:'POST',body:data})).json();activeJob=job.id;await refreshHistory();pollJob();}
  catch(error){showError(error.message);setBusy(false);}

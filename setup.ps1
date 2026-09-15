@@ -3,6 +3,7 @@ param(
     [ValidateSet('CPU','CUDA')][string]$Device = 'CPU',
     [switch]$SkipModelDownload,
     [switch]$SkipInferenceTest,
+    [switch]$IncludeSharp,
     [string]$PythonExe = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -54,10 +55,18 @@ if ($Device -eq 'CUDA') {
     Invoke-Checked $appPython @('-m','pip','install','-r','requirements-anysplat.txt','-c','constraints-windows-py311.txt')
     Invoke-Checked $appPython @('scripts\verify_anysplat.py','--check-import')
 }
+if ($IncludeSharp) {
+    Invoke-Checked $appPython @('-m','pip','install','-r','requirements-sharp.txt','-c','constraints-windows-py311.txt')
+}
 if (-not $SkipModelDownload) {
     $modelChoice = if ($Device -eq 'CUDA') { 'all' } else { 'depth' }
     Invoke-Checked $appPython @('scripts\download_models.py','--model',$modelChoice)
     if ($Device -eq 'CUDA') { Invoke-Checked $appPython @('scripts\verify_anysplat.py','--check-hash','--check-import') }
+    if ($IncludeSharp) {
+        Write-Host 'SHARP is licensed only for non-commercial scientific research.' -ForegroundColor Yellow
+        Invoke-Checked $appPython @('scripts\download_models.py','--model','sharp')
+        Invoke-Checked $appPython @('scripts\verify_sharp.py','--check-hash','--check-import')
+    }
 }
 Invoke-Checked $appPython @('-m','pip','check')
 $doctorArgs = @('scripts\doctor.py')

@@ -55,7 +55,7 @@ function perspective(fov, aspect) { const f = 1 / Math.tan(fov / 2), near = 0.01
 
 export class GaussianViewer {
     constructor(canvas, onStats, onError) {
-        this.canvas = canvas; this.onStats = onStats; this.onError = onError; this.count = 0; this.scale = 1; this.auto = false; this.fov = 50 * Math.PI / 180; this.dirty = true; this.serial = 0; this.lastTime = 0;
+        this.canvas = canvas; this.onStats = onStats; this.onError = onError; this.count = 0; this.scale = 1; this.auto = false; this.autoDirection = 1; this.fov = 50 * Math.PI / 180; this.dirty = true; this.serial = 0; this.lastTime = 0;
         this.init(); this.controls(); this.reset();
         this.observer = new ResizeObserver(() => { this.dirty = true; }); this.observer.observe(canvas);
         canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); this.lost = true; this.onError('The browser lost its graphics context. Reload the page or close other graphics-heavy tabs.'); });
@@ -99,13 +99,20 @@ export class GaussianViewer {
         this.target = this.meta?.target?.slice() || [0, 0, -3];
         const eye = this.meta?.source_camera || [0, 0, 0], offset = eye.map((v, i) => v - this.target[i]);
         this.distance = Math.max(Math.hypot(...offset), 0.1); this.yaw = Math.atan2(offset[0], offset[2]); this.pitch = Math.asin(Math.max(-0.999, Math.min(0.999, offset[1] / this.distance)));
+        this.baseYaw = this.yaw; this.basePitch = this.pitch; this.viewLimits = this.meta?.view_limits || null; this.autoDirection = 1;
         this.fov = (this.meta?.fov_y || 50) * Math.PI / 180; this.changed();
     }
     preset(name) {
         this.reset(); if (name === 'back') this.yaw += Math.PI; if (name === 'left') this.yaw -= Math.PI / 2; if (name === 'right') this.yaw += Math.PI / 2; if (name === 'top') this.pitch = Math.PI / 2 - 0.01;
         this.changed();
     }
-    changed() { this.serial++; this.dirty = true; this.view = this.matrix(); this.sort(); }
+    clampView() {
+        if (!this.viewLimits) return;
+        const yawLimit = (this.viewLimits.yaw_degrees || 0) * Math.PI / 180, pitchLimit = (this.viewLimits.pitch_degrees || 0) * Math.PI / 180;
+        this.yaw = Math.max(this.baseYaw - yawLimit, Math.min(this.baseYaw + yawLimit, this.yaw));
+        this.pitch = Math.max(this.basePitch - pitchLimit, Math.min(this.basePitch + pitchLimit, this.pitch));
+    }
+    changed() { this.clampView(); this.serial++; this.dirty = true; this.view = this.matrix(); this.sort(); }
     matrix() { const cp = Math.cos(this.pitch); this.eye = [this.target[0] + this.distance * cp * Math.sin(this.yaw), this.target[1] + this.distance * Math.sin(this.pitch), this.target[2] + this.distance * cp * Math.cos(this.yaw)]; return lookAt(this.eye, this.target); }
     sort() { if (!this.worker || this.sorting || !this.view) return; this.sorting = true; this.worker.postMessage({ view: Array.from(this.view), serial: this.serial }); }
     controls() {
@@ -126,7 +133,14 @@ export class GaussianViewer {
     loop(now) {
         requestAnimationFrame(this.loop); if (this.lost) return;
         const elapsed = Math.min(0.05, (now - this.lastTime) / 1000); this.lastTime = now;
-        if (this.auto && !document.hidden) { this.yaw += elapsed * 0.2; this.changed(); }
+        if (this.auto && !document.hidden) {
+            this.yaw += elapsed * 0.2 * this.autoDirection;
+            if (this.viewLimits) {
+                const limit = this.viewLimits.yaw_degrees * Math.PI / 180;
+                if (this.yaw >= this.baseYaw + limit || this.yaw <= this.baseYaw - limit) this.autoDirection *= -1;
+            }
+            this.changed();
+        }
         if (!this.dirty) return; this.dirty = false;
         const start = performance.now(), gl = this.gl, c = this.canvas, dpr = Math.min(devicePixelRatio || 1, 1.5);
         const width = Math.max(1, Math.floor(c.clientWidth * dpr)), height = Math.max(1, Math.floor(c.clientHeight * dpr));

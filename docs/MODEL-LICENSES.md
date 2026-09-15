@@ -1,5 +1,16 @@
 # Model and source licences
 
+## Apple SHARP
+
+- Official source: https://github.com/apple/ml-sharp
+- Pinned source commit: `1eaa046834b81852261262b41b0919f5c1efdd2e`
+- Model licence: non-commercial scientific research only
+- Preserved notices: `vendor/ml-sharp/LICENSE_MODEL`, `vendor/ml-sharp/LICENSE`, and `docs/Apple-Model-Attribution.txt`
+
+The app requires an explicit acknowledgement before each SHARP job. Do not use the
+SHARP checkpoint or its output for a commercial product unless Apple grants separate
+permission. The camera clamp is a rendering safeguard, not a change to that licence.
+
 ## AnySplat
 
 - Official source: https://github.com/InternRobotics/AnySplat
