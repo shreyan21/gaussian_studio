@@ -40,7 +40,7 @@ and import graph. The app's technical integration cannot resolve that legal ques
 
 - Model file: https://github.com/danielgatis/rembg/releases/download/v0.0.0/silueta.onnx
 - Architecture/source: https://github.com/xuebinqin/U-2-Net
-- Purpose: offline main-object segmentation before AnySplat reconstruction
+- Purpose: offline main-object segmentation before AnySplat or SHARP reconstruction
 - Source licence: Apache-2.0
 
 The model is downloaded during setup and verified against the pinned SHA-256 in

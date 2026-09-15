@@ -170,10 +170,11 @@ def test_sharp_requires_research_acknowledgement(client, monkeypatch, tmp_path):
     monkeypatch.setattr(Jobs, "run", lambda *args: None)
     denied = client.post("/api/jobs", files={"image": ("rose.png", photo(), "image/png")}, data={"engine": "sharp"})
     assert denied.status_code == 422
-    accepted = client.post("/api/jobs", files={"image": ("rose.png", photo(), "image/png")}, data={"engine": "sharp", "research_use": "true"})
+    accepted = client.post("/api/jobs", files={"image": ("rose.png", photo(), "image/png")}, data={"engine": "sharp", "research_use": "true", "object_only": "true"})
     assert accepted.status_code == 202
     request = json.loads((tmp_path / "jobs" / accepted.json()["id"] / "request.json").read_text(encoding="utf-8"))
     assert request["research_use"] is True
+    assert request["object_only"] is True
 
 
 def test_sharp_viewer_has_hard_camera_limits():

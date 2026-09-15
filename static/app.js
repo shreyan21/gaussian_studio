@@ -12,7 +12,7 @@ async function request(url,options={}){
 function setBusy(busy){
  for(const id of ['imageInput','engine','device','resolution','depthStrength','viewLimit','objectOnly','researchUse'])$(id).disabled=busy;
  $('depthStrength').disabled=busy||$('engine').value!=='depth';
- $('objectOnly').disabled=busy||$('engine').value!=='anysplat';
+ $('objectOnly').disabled=busy||!['anysplat','sharp'].includes($('engine').value);
  $('researchUse').disabled=busy||$('engine').value!=='sharp';
  $('generateBtn').disabled=busy||!selectedFiles.length;$('generateBtn').textContent=busy?'Reconstructing…':'Create 3D scene ↗';$('progressPanel').hidden=!busy;$('cancelBtn').disabled=false;
 }
@@ -49,10 +49,10 @@ for(const type of ['dragenter','dragover'])$('dropZone').addEventListener(type,e
 for(const type of ['dragleave','drop'])$('dropZone').addEventListener(type,e=>{e.preventDefault();$('dropZone').classList.remove('drag-over');});
 $('dropZone').addEventListener('drop',e=>chooseFiles(e.dataTransfer.files));
 $('engine').addEventListener('change',()=>{
- const engine=$('engine').value,anysplat=engine==='anysplat',sharp=engine==='sharp';$('qualityField').hidden=engine!=='depth';$('viewBudgetField').hidden=!anysplat;$('objectFocusField').hidden=!anysplat;$('researchUseField').hidden=!sharp;$('objectOnly').disabled=!anysplat;$('researchUse').disabled=!sharp;$('depthStrength').disabled=engine!=='depth';
+ const engine=$('engine').value,anysplat=engine==='anysplat',sharp=engine==='sharp',objectCapable=anysplat||sharp;$('qualityField').hidden=engine!=='depth';$('viewBudgetField').hidden=!anysplat;$('objectFocusField').hidden=!objectCapable;$('researchUseField').hidden=!sharp;$('objectOnly').disabled=!objectCapable;$('researchUse').disabled=!sharp;$('depthStrength').disabled=engine!=='depth';
  $('device').querySelector('option[value="cpu"]').disabled=anysplat;
  if(anysplat&&$('device').value==='cpu')$('device').value='auto';
- $('engineDescription').textContent=sharp?'Creates nearby novel views from one image. Dragging stops at ±30° horizontal and ±18° vertical because farther sides were not observed.':anysplat?'Jointly predicts cameras and 3D Gaussians from two or more uncalibrated views. NVIDIA CUDA required.':'Predicts depth from one image, then builds a visible Gaussian surface. CPU and CUDA supported.';
+ $('engineDescription').textContent=sharp?'Best one-photo quality. Subject focus enlarges the object and removes the tearing background; rotation stays within the nearby views SHARP can reconstruct.':anysplat?'Jointly predicts cameras and 3D Gaussians from two or more uncalibrated views. NVIDIA CUDA required.':'Predicts depth from one image, then builds a visible Gaussian surface. CPU and CUDA supported.';
 });
 $('engine').dispatchEvent(new Event('change'));
 $('depthStrength').addEventListener('input',()=>{$('depthValue').textContent=Number($('depthStrength').value).toFixed(2)+'×';});
@@ -110,7 +110,7 @@ $('createForm').addEventListener('submit',async e=>{
  if(engine==='anysplat'&&selectedFiles.length<2){showError('AnySplat needs at least two overlapping images.');return;}
  if(engine==='sharp'&&!$('researchUse').checked){showError('Confirm non-commercial scientific research use before running Apple SHARP.');return;}
  if(health&&!health.models[engine]){showError(engine==='sharp'?'SHARP is not installed. Install requirements-sharp.txt and run scripts\\download_models.py --model sharp.':engine==='anysplat'?'AnySplat is not installed. Run Setup NVIDIA Workstation.cmd from the app folder, then click refresh.':'Download the depth model first: run .venv\\Scripts\\python.exe scripts\\download_models.py --model depth from the app folder, then click refresh.');return;}
- if(engine==='anysplat'&&$('objectOnly').checked&&health&&!health.models.foreground){showError('Foreground isolation is not installed. Rerun Setup NVIDIA Workstation.cmd, then click refresh.');return;}
+ if(['anysplat','sharp'].includes(engine)&&$('objectOnly').checked&&health&&!health.models.foreground){showError('Foreground isolation is not installed. Run scripts\\download_models.py --model foreground, then click refresh.');return;}
  if(engine==='anysplat'&&health?.hardware.status!=='checking'&&!health?.hardware.cuda){showError('AnySplat requires NVIDIA CUDA. Run Setup NVIDIA Workstation.cmd on the office workstation.');return;}
  if($('device').value==='cuda'&&health?.hardware.status!=='checking'&&!health?.hardware.cuda){showError('CUDA is not available in this Python environment. Select CPU or Auto for Depth Anything.');return;}
  const data=new FormData();for(const item of selectedFiles)data.append('images',item.file,item.file.name);data.append('engine',engine);data.append('device',$('device').value);data.append('resolution',$('resolution').value);data.append('depth_strength',$('depthStrength').value);data.append('view_limit',$('viewLimit').value);data.append('object_only',$('objectOnly').checked);data.append('research_use',$('researchUse').checked);

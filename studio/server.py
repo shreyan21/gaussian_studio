@@ -317,7 +317,7 @@ def create_app(data_dir=None):
             {"file": "input.png" if i == 0 else f"input_{i}.png", "original_name": Path(names[i].replace("\\", "/")).name[:100]}
             for i in range(len(cleaned))
         ]
-        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "view_limit": view_limit, "object_only": bool(object_only and engine == "anysplat"), "research_use": bool(research_use and engine == "sharp")}
+        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "view_limit": view_limit, "object_only": bool(object_only and engine in ("anysplat", "sharp")), "research_use": bool(research_use and engine == "sharp")}
         return app.state.jobs.create(cleaned, names, options)
 
     @app.get("/api/jobs")

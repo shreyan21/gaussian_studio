@@ -65,6 +65,15 @@ def depth_predict(image, directory, options, device):
     }
 
 
+def filter_pixel_gaussians(gaussians, foreground_mask):
+    """Keep every predicted depth layer belonging to a foreground pixel."""
+    mask = np.asarray(foreground_mask, dtype=bool).reshape(-1)
+    if not mask.size or len(gaussians) % mask.size:
+        raise RuntimeError("SHARP output does not match the foreground mask dimensions.")
+    layer_count = len(gaussians) // mask.size
+    return gaussians[np.tile(mask, layer_count)], layer_count
+
+
 def sharp_predict(image, directory, options, device):
     import psutil
     import torch
@@ -77,6 +86,21 @@ def sharp_predict(image, directory, options, device):
     sys.path.insert(0, str(SHARP_SOURCE))
     from sharp.models import PredictorParams, create_predictor
     from sharp.utils.gaussians import Gaussians3D, unproject_gaussians
+
+    source_size = list(image.size)
+    object_only = bool(options.get("object_only", True))
+    foreground_mask = None
+    foreground_coverage = None
+    if object_only:
+        from studio.foreground import focus_object, load_session, predict_mask
+
+        progress(directory, 8, "Detecting and tightly framing the main subject")
+        session = load_session()
+        image, foreground_mask, foreground_coverage = focus_object(
+            image, predict_mask(image, session), size=1536
+        )
+        Image.fromarray(np.uint8(foreground_mask) * 255).save(directory / "object-mask-0.png")
+        del session
 
     progress(directory, 15, "Loading Apple SHARP weights on " + device.upper())
     state = torch.load(str(SHARP_WEIGHTS), map_location="cpu", weights_only=True, mmap=True)
@@ -113,11 +137,18 @@ def sharp_predict(image, directory, options, device):
     result[:, 8:12] = np.stack((-quaternion[:, 1], quaternion[:, 0], -quaternion[:, 3], quaternion[:, 2]), axis=-1)
     linear = np.clip(gaussian.colors.reshape(-1, 3).numpy(), 0, 1)
     result[:, 12:15] = np.where(linear <= 0.0031308, linear * 12.92, 1.055 * linear ** (1 / 2.4) - 0.055)
+    layer_count = None
+    if foreground_mask is not None:
+        result, layer_count = filter_pixel_gaussians(result, foreground_mask)
     return result, {
         "fov_y": float(np.degrees(2 * np.arctan(height / (2 * focal)))),
-        "image_size": [width, height], "engine": "Apple SHARP", "method": "sharp", "device": device,
+        "image_size": [width, height], "source_image_size": source_size,
+        "engine": "Apple SHARP", "method": "sharp", "device": device,
         "precision": "CUDA mixed float16; CPU float32 postprocessing" if device == "cuda" else "float32",
         "licence": "Apple ML Research Model: non-commercial scientific research only",
+        "object_only": object_only,
+        "foreground_coverage": round(foreground_coverage, 4) if foreground_coverage is not None else None,
+        "gaussian_layers_per_pixel": layer_count,
         "view_limits": {"yaw_degrees": 30, "pitch_degrees": 18},
         "limitation": "Single-image prediction supports nearby novel views only. Rotation is intentionally clamped to ±30° horizontally and ±18° vertically because unseen sides are not reconstructed.",
     }
