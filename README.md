@@ -1,52 +1,34 @@
-# Gaussian Scene Studio
+# Gaussian Scene Studio 3
 
-Local Python app for reconstructing an interactive 3D Gaussian scene. Apple SHARP is the clearest single-image research mode; AnySplat handles overlapping multi-view photographs, and Depth Anything remains a lightweight fallback.
+Pretrained-free multi-view reconstruction for local NVIDIA workstations. Upload ordered overlapping photographs; app estimates camera poses, reconstructs dense surfaces, converts them to adaptive oriented 3D Gaussians, and opens an interactive browser viewer.
 
-SHARP scenes intentionally stop at ±30° horizontal and ±18° vertical rotation. For a dog, product, or other distinct subject, keep **Focus main subject** enabled: the app detects and tightly frames it before SHARP inference, then removes background Gaussians that would stretch during rotation. A single photograph still cannot reveal the back of an object, so the viewer blocks movement beyond the useful predicted novel-view range instead of displaying broken geometry.
+No SHARP, AnySplat, Depth Anything, downloaded reconstruction checkpoint, or cloud inference remains in this version.
 
-AnySplat enables **Isolate main object** by default: each view is segmented and cropped around the focused subject, neutral background pixels are withheld from the exported Gaussians, and rotations in the viewer show the reconstructed object instead of the surrounding scene.
+## What "custom model" means here
 
-## Office workstation: quickest setup
+This is a per-scene reconstruction model, not a newly trained general-purpose neural foundation model:
 
-The photographed workstation has an NVIDIA RTX A1000 with 8 GB VRAM. Its displayed driver (580.97) is new enough for the CUDA 12.8 PyTorch build used here. Keep the driver; install Python 3.11 and Git if missing.
+1. SIFT features and geometric verification match uploaded photographs.
+2. Incremental structure-from-motion solves camera intrinsics, poses, and sparse geometry.
+3. CUDA PatchMatch estimates dense multi-view depth.
+4. Geometrically consistent samples are fused into an oriented point cloud.
+5. Gaussian Scene Studio computes robust local spacing, filters outliers, orients each anisotropic Gaussian to its surface normal, and exports portable 3DGS PLY/GSB files.
 
-Before setup, confirm Windows sees both GPU and Python:
+This avoids pretrained-model licence and hallucination issues. It cannot invent sides absent from all photographs.
 
-```powershell
-nvidia-smi
-py -3.11 -c "import sys; print(sys.version); print('64-bit:', sys.maxsize > 2**32)"
-```
+## Office workstation: three commands
 
-```powershell
-winget install -e --id Python.Python.3.11
-winget install -e --id Git.Git
-```
-
-Open a new PowerShell window, then run:
+Requirement: Windows 10/11, NVIDIA driver visible in `nvidia-smi`, approximately 8 GB free VRAM, 64-bit Python 3.11, and Git.
 
 ```powershell
 git clone https://github.com/shreyan21/gaussian_studio.git D:\GaussianSceneStudio
 Set-Location D:\GaussianSceneStudio
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA
+.\Setup NVIDIA Workstation.cmd
 ```
 
-Setup creates `.venv`, installs pinned dependencies, downloads the AnySplat weights, verifies their SHA-256 checksum, and runs a real two-view CUDA inference smoke test. First setup needs internet and several GB of free disk space.
+Setup creates `.venv`, installs pinned Python packages, downloads official COLMAP 4.2.0 CUDA binaries, verifies SHA-256, and runs automated tests.
 
-To additionally install SHARP, explicitly accept its research-only use and run:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA -IncludeSharp
-```
-
-If `D:\GaussianSceneStudio` already exists, update instead:
-
-```powershell
-Set-Location D:\GaussianSceneStudio
-git pull --ff-only
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA
-```
-
-Start local app:
+Start app:
 
 ```powershell
 .\Start Studio.cmd
@@ -54,81 +36,69 @@ Start local app:
 
 Open `http://127.0.0.1:7860`.
 
-## Temporary public link
+Existing checkout:
 
-Close any already-running Studio window, then run:
+```powershell
+Set-Location D:\GaussianSceneStudio
+git pull --ff-only
+.\Setup NVIDIA Workstation.cmd
+.\Start Studio.cmd
+```
+
+## Temporary protected public link
 
 ```powershell
 .\Start Public Link.cmd
 ```
 
-On first run it downloads the official Cloudflare tunnel client into the ignored local `tools` folder. It starts Studio, prints a temporary `trycloudflare.com` URL containing a random access token, and opens it in the browser.
+Keep terminal open. Share complete tokenized URL only with trusted testers. Quick Tunnel is temporary, not production hosting.
 
-- Keep the terminal window open.
-- Share the full protected URL only with trusted people.
-- Closing the window stops the app and tunnel.
-- Each run creates a new URL and token.
-- Quick Tunnels are for testing, not production hosting.
+## Capture requirements
 
-No public access is enabled by `Start Studio.cmd`; normal mode remains loopback-only.
+- Six images minimum; 20-40 recommended.
+- Keep object and background completely stationary. Move only camera.
+- Capture one ordered smooth circle, then optional slightly higher ring.
+- Keep 70-85% overlap between neighbors.
+- Lock zoom, focus, exposure, white balance, lighting, and distance.
+- Avoid motion blur, mirrors, glossy highlights, glass, thin foliage, and featureless surfaces.
 
-## Manual validation commands
+Four photographs are normally insufficient for dense 360-degree reconstruction. Rotating a shoe while background stays fixed violates camera geometry and causes shattered output.
+
+## RTX A1000 8 GB settings
+
+- Start with **Balanced - 1600 px**.
+- Close QGIS, games, WebGL-heavy tabs, and other GPU work.
+- Try 20-30 photographs first.
+- Use **Quick - 1200 px** after CUDA out-of-memory.
+- High mode is optional and may exceed 8 GB VRAM.
+- Default job timeout is 120 minutes. Override with `GSS_JOB_TIMEOUT_MINUTES` if needed.
+
+## Kaggle GPU test
+
+Open `notebooks/Gaussian_Studio_Custom_Kaggle.ipynb`, enable a GPU and internet, then run its single code cell. Notebook installs `pycolmap-cuda12==4.2.0`, starts app, and prints a protected Cloudflare link.
+
+Kaggle storage is temporary. Download `scene.ply` immediately after each successful run.
+
+## Manual checks
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\doctor.py --require-cuda --require-anysplat
-.\.venv\Scripts\python.exe scripts\verify_anysplat.py --check-import --check-hash --check-inference
+.\.venv\Scripts\python.exe scripts\doctor.py --require-custom
 .\.venv\Scripts\python.exe -m pytest -q tests
 ```
 
-## Best settings for RTX A1000 8 GB
+## Output
 
-- Close QGIS, browsers using WebGL, and other GPU-heavy programs before reconstruction.
-- Use **Auto-safe** view count. It measures free VRAM, not only total VRAM.
-- Start with 2 adjacent, high-overlap images. Increase only after a successful run.
-- Keep input images at the default processing resolution.
-- If CUDA reports out-of-memory, restart Studio and use fewer views.
-- The worker refuses AnySplat below 5.5 GB free VRAM instead of beginning a likely crash.
-- On GPUs up to 8.5 GB, model weights and inputs load directly in BF16, or FP16 when BF16 is unavailable, avoiding a temporary float32 GPU copy.
+- `scene.ply`: full Gaussian scene.
+- `scene.gsb`: bounded browser preview.
+- `scene.json`: method, runtime, input count, limitations, and scene framing.
+- `worker.log`: reconstruction evidence and failure details.
 
-The app can accept more photographs than fit into one 8 GB inference pass, but more input images do not create missing viewpoints automatically.
+Output is Gaussian splats, not a watertight CAD/Blender mesh.
 
-## Photograph capture rules
+## Commercial-use position
 
-3D quality depends more on capture consistency than GPU size:
+Application code is MIT. COLMAP library is BSD-3-Clause, but its official binary includes dependencies with their own notices. No pretrained model weights are used. Preserve third-party notices and obtain organisation-specific legal review before commercial distribution. See [docs/MODEL-LICENSES.md](docs/MODEL-LICENSES.md).
 
-1. Keep the object and background completely still; move only the camera.
-2. Capture a smooth arc or full circle in order, with 60-80% overlap.
-3. Keep distance, zoom, exposure, focus, and lighting consistent.
-4. Avoid motion blur, reflections, transparent objects, and featureless backgrounds.
-5. For a standalone object, capture 20-40 views around it, then another slightly higher ring.
+## Evidence boundary
 
-The four shoe photographs previously tested moved the shoe relative to the background. That violates multi-view geometry and produces separated fragments even when inference itself succeeds.
-
-## Backend modes
-
-- **Apple SHARP:** one image; clear nearby novel views, optional subject-focused reconstruction, and hard camera limits. The model is restricted to non-commercial scientific research.
-- **AnySplat:** two or more overlapping views; produces a Gaussian PLY and interactive viewer.
-- **Depth Anything:** one-image geometric preview; cannot reconstruct unseen sides.
-
-## Commercial-use warning
-
-The AnySplat repository and released model are published under MIT, but this project also vendors or depends on third-party components with their own notices. Some current vendored source files contain non-commercial Creative Commons notices. Therefore, this package is **not yet represented as commercially cleared**. Review `docs/MODEL-LICENSES.md`, replace or obtain permission for restricted components, and obtain legal review before commercial distribution.
-
-## Technical integration
-
-The AnySplat adapter pins source commit `5f5e208a7dd57d52e43ea0d553a95eab526e8775` and model revision `d2e8c343672646041ad4ea518184968f94362f01`. It uses PyTorch scaled-dot-product attention and scatter compatibility paths, exports portable PLY, and renders with the bundled WebGL2 viewer. The app does not require Linux, WSL, Docker, `nvcc`, or a local gsplat build for this inference path.
-
-## Useful scripts
-
-```powershell
-# CPU-only setup for UI development
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CPU -SkipInferenceTest
-
-# Skip only the real CUDA smoke test
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -Device CUDA -SkipInferenceTest
-
-# Direct launch
-.\.venv\Scripts\python.exe run.py
-```
-
-See `docs/VALIDATION.md` for verified and still-pending evidence.
+CPU tests validate API, security, export, image preparation, and dense-cloud-to-Gaussian conversion. Full reconstruction must still be acceptance-tested on actual RTX A1000 hardware with a valid 20-40 image capture; see [docs/VALIDATION.md](docs/VALIDATION.md).

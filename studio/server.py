@@ -4,6 +4,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import threading
@@ -20,12 +21,29 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from studio.anysplat_runtime import model_ready as anysplat_model_ready
-from studio.config import DATA, DEPTH_DIR, MAX_IMAGES, MAX_PIXELS, MAX_UPLOAD, ROOT, SHARP_SOURCE, SHARP_WEIGHTS
-from studio.foreground import model_ready as foreground_model_ready
+from studio.config import DATA, MAX_IMAGES, MAX_PIXELS, MAX_UPLOAD, ROOT
+from studio.custom_sfm import engine_ready
 from studio.gaussians import export_scene, make_demo
 
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+
+
+def terminate_process_tree(process):
+    if process is None or process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
 
 def atomic_json(path, value):
@@ -100,14 +118,23 @@ class Jobs:
                 with self.lock:
                     if job_id in self.cancelled:
                         return
-                    self.process = subprocess.Popen([sys.executable, "-m", "studio.worker", str(path)], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    self.process = subprocess.Popen(
+                        [sys.executable, "-m", "studio.worker", str(path)],
+                        cwd=ROOT,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        creationflags=creationflags,
+                        start_new_session=os.name != "nt",
+                    )
                     process = self.process
                 try:
-                    returncode = process.wait(timeout=1800)
+                    timeout_minutes = max(10, int(os.environ.get("GSS_JOB_TIMEOUT_MINUTES", "120")))
+                    returncode = process.wait(timeout=timeout_minutes * 60)
                 except subprocess.TimeoutExpired:
-                    process.kill()
+                    terminate_process_tree(process)
                     process.wait()
-                    raise RuntimeError("Reconstruction exceeded 30 minutes. Use the lightweight model or a faster device.")
+                    raise RuntimeError(f"Reconstruction exceeded {timeout_minutes} minutes and was stopped.")
             with self.lock:
                 if job_id in self.cancelled:
                     return
@@ -137,8 +164,7 @@ class Jobs:
             if self.active != job_id:
                 raise HTTPException(409, "This reconstruction is no longer running")
             self.cancelled.add(job_id)
-            if self.process and self.process.poll() is None:
-                self.process.terminate()
+            terminate_process_tree(self.process)
             job = json.loads((path / "job.json").read_text())
             job.update(status="cancelled", message="Reconstruction cancelled")
             atomic_json(path / "job.json", job)
@@ -153,7 +179,7 @@ class Jobs:
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.kill()
+                terminate_process_tree(process)
 
 
 def create_app(data_dir=None):
@@ -250,31 +276,26 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        sharp_ready = SHARP_WEIGHTS.is_file() and (SHARP_SOURCE / "sharp" / "models").is_dir()
-        return {"app": "Gaussian Scene Studio", "version": "2.3.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "models": {"depth": (DEPTH_DIR / "model.safetensors").is_file(), "sharp": sharp_ready, "anysplat": anysplat_model_ready(), "foreground": foreground_model_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "remote_access": bool(access_token)}
+        return {"app": "Gaussian Scene Studio", "version": "3.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "remote_access": bool(access_token)}
 
     @app.post("/api/jobs", status_code=202)
     async def upload(
         images: list[UploadFile] | None = File(None),
         image: UploadFile | None = File(None),
-        engine: str = Form("depth"),
+        engine: str = Form("custom"),
         device: str = Form("auto"),
         resolution: int = Form(512),
         depth_strength: float = Form(1.0),
         view_limit: str = Form("auto"),
-        object_only: bool = Form(True),
-        research_use: bool = Form(False),
     ):
-        if engine not in ("depth", "sharp", "anysplat") or device not in ("auto", "cpu", "cuda"):
+        if engine != "custom" or device not in ("auto", "cpu", "cuda"):
             raise HTTPException(422, "Invalid model or device")
-        if engine == "sharp" and not research_use:
-            raise HTTPException(422, "Confirm SHARP will be used only for non-commercial scientific research")
         if resolution not in (384, 512, 768) or not 0.25 <= depth_strength <= 1.5:
             raise HTTPException(422, "Invalid quality or depth range")
         if view_limit not in ("auto", "all", "2", "4", "6", "8", "10", "12", "16"):
-            raise HTTPException(422, "Invalid AnySplat view budget")
-        if engine == "anysplat" and device == "cpu":
-            raise HTTPException(422, "AnySplat requires NVIDIA CUDA; choose Auto or NVIDIA CUDA")
+            raise HTTPException(422, "Invalid view option")
+        if device == "cpu":
+            raise HTTPException(422, "Dense custom reconstruction requires NVIDIA CUDA; choose Auto or NVIDIA CUDA")
         uploads = list(images or [])
         if image is not None:
             uploads.insert(0, image)
@@ -282,10 +303,8 @@ def create_app(data_dir=None):
             raise HTTPException(422, "Upload at least one image")
         if len(uploads) > MAX_IMAGES:
             raise HTTPException(422, f"Upload at most {MAX_IMAGES} images")
-        if engine in ("depth", "sharp") and len(uploads) != 1:
-            raise HTTPException(422, "Depth Anything and SHARP accept exactly one image; choose AnySplat for multiple images")
-        if engine == "anysplat" and len(uploads) < 2:
-            raise HTTPException(422, "AnySplat needs at least two overlapping images")
+        if len(uploads) < 6:
+            raise HTTPException(422, "Custom reconstruction needs at least 6 overlapping photographs; 20-40 are recommended")
 
         cleaned, names = [], []
         for upload_file in uploads:
@@ -317,7 +336,7 @@ def create_app(data_dir=None):
             {"file": "input.png" if i == 0 else f"input_{i}.png", "original_name": Path(names[i].replace("\\", "/")).name[:100]}
             for i in range(len(cleaned))
         ]
-        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "view_limit": view_limit, "object_only": bool(object_only and engine in ("anysplat", "sharp")), "research_use": bool(research_use and engine == "sharp")}
+        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "view_limit": view_limit}
         return app.state.jobs.create(cleaned, names, options)
 
     @app.get("/api/jobs")

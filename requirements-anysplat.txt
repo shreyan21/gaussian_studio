@@ -1,9 +1,0 @@
-# PLY-only AnySplat inference dependencies. Linux-only gsplat/torch-scatter/xformers
-# are replaced by scoped PyTorch 2.8 compatibility paths in studio/anysplat_runtime.py.
-einops==0.8.1
-jaxtyping==0.3.2
-omegaconf==2.3.0
-antlr4-python3-runtime==4.9.3
-wadler-lindig==0.1.7
-scipy==1.15.3
-onnxruntime==1.23.2

@@ -1,9 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('CPU','CUDA')][string]$Device = 'CPU',
-    [switch]$SkipModelDownload,
-    [switch]$SkipInferenceTest,
-    [switch]$IncludeSharp,
+    [switch]$SkipColmapDownload,
     [string]$PythonExe = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -15,68 +12,52 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) { throw "Command failed ($LASTEXITCODE): $Program $($Arguments -join ' ')" }
 }
 
-Write-Host 'Gaussian Scene Studio setup' -ForegroundColor Cyan
-Write-Host "Selected inference runtime: $Device"
+Write-Host 'Gaussian Scene Studio - pretrained-free setup' -ForegroundColor Cyan
 if (-not (Test-Path -LiteralPath '.venv\Scripts\python.exe')) {
     $candidates = @()
     if ($PythonExe) { $candidates += $PythonExe }
-    $pyLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
-    if ($pyLauncher) {
+    $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($launcher) {
         try {
-            $found = & $pyLauncher.Source -3.11 -c 'import sys; print(sys.executable)' 2>$null
+            $found = & $launcher.Source -3.11 -c 'import sys; print(sys.executable)' 2>$null
             if ($LASTEXITCODE -eq 0) { $candidates += $found }
         } catch { }
     }
-    $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
-    if ($pythonCommand -and $pythonCommand.Source -notlike '*\WindowsApps\*') { $candidates += $pythonCommand.Source }
+    $python = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($python -and $python.Source -notlike '*\WindowsApps\*') { $candidates += $python.Source }
     $basePython = $null
     foreach ($candidate in $candidates) {
         if (-not (Test-Path -LiteralPath $candidate)) { continue }
-        try {
-            & $candidate -c 'import sys; assert sys.version_info[:2] == (3,11) and sys.maxsize > 2**32' 2>$null
-            if ($LASTEXITCODE -eq 0) { $basePython = $candidate; break }
-        } catch { }
+        & $candidate -c 'import sys; assert sys.version_info[:2] == (3,11) and sys.maxsize > 2**32' 2>$null
+        if ($LASTEXITCODE -eq 0) { $basePython = $candidate; break }
     }
-    if (-not $basePython) { throw 'Install 64-bit Python 3.11 from python.org (include the launcher), then run setup again. Or use -PythonExe C:\Path\To\python.exe.' }
+    if (-not $basePython) { throw 'Install 64-bit Python 3.11, open a new PowerShell window, then rerun setup.' }
     Invoke-Checked $basePython @('-m','venv','.venv')
 }
+
 $appPython = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
-Invoke-Checked $appPython @('-c','import sys; sys.exit(0 if sys.version_info[:2] == (3,11) else 1)')
 Invoke-Checked $appPython @('-m','pip','install','--upgrade','pip')
-Invoke-Checked $appPython @('-m','pip','install','-r','requirements.txt','-r','requirements-torch-runtime.txt','-c','constraints-windows-py311.txt')
-$wheelIndex = if ($Device -eq 'CUDA') { 'https://download.pytorch.org/whl/cu128' } else { 'https://download.pytorch.org/whl/cpu' }
-# A device switch must replace a pre-existing CPU/CUDA wheel, not report it satisfied.
-$desiredRuntime = if ($Device -eq 'CUDA') { 'cu128' } else { 'cpu' }
-$installedRuntime = & $appPython 'scripts\runtime_version.py'
-$torchArguments = @('-m','pip','install','--no-deps','torch==2.8.0','torchvision==0.23.0','--index-url',$wheelIndex)
-if ($installedRuntime -notlike "*+$desiredRuntime*") { $torchArguments += '--force-reinstall' }
-Invoke-Checked $appPython $torchArguments
-if ($Device -eq 'CUDA') {
-    Invoke-Checked $appPython @('-m','pip','install','-r','requirements-anysplat.txt','-c','constraints-windows-py311.txt')
-    Invoke-Checked $appPython @('scripts\verify_anysplat.py','--check-import')
+Invoke-Checked $appPython @('-m','pip','install','-r','requirements.txt')
+
+$colmapRoot = Join-Path $PSScriptRoot 'tools\colmap'
+$colmap = Get-ChildItem -LiteralPath $colmapRoot -Filter 'COLMAP.bat' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $colmap -and -not $SkipColmapDownload) {
+    $tools = Join-Path $PSScriptRoot 'tools'
+    $archive = Join-Path $tools 'colmap-4.2.0-windows-cuda.zip'
+    New-Item -ItemType Directory -Path $tools -Force | Out-Null
+    New-Item -ItemType Directory -Path $colmapRoot -Force | Out-Null
+    Write-Host 'Downloading official COLMAP 4.2.0 CUDA package (~381 MB)...' -ForegroundColor Cyan
+    Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/colmap/colmap/releases/download/4.2.0/colmap-x64-windows-cuda.zip' -OutFile $archive
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+    $expected = '991e0bae403a496fcc4de0c1f1f428619bf12f8000978f77bc6799d9bfeac23e'
+    if ($actual -ne $expected) { throw "COLMAP checksum mismatch. Expected $expected, got $actual." }
+    Expand-Archive -LiteralPath $archive -DestinationPath $colmapRoot -Force
+    Remove-Item -LiteralPath $archive -Force
+    $colmap = Get-ChildItem -LiteralPath $colmapRoot -Filter 'COLMAP.bat' -File -Recurse | Select-Object -First 1
 }
-if ($IncludeSharp) {
-    Invoke-Checked $appPython @('-m','pip','install','-r','requirements-sharp.txt','-c','constraints-windows-py311.txt')
-}
-if (-not $SkipModelDownload) {
-    $modelChoice = if ($Device -eq 'CUDA') { 'all' } else { 'depth' }
-    Invoke-Checked $appPython @('scripts\download_models.py','--model',$modelChoice)
-    if ($Device -eq 'CUDA') { Invoke-Checked $appPython @('scripts\verify_anysplat.py','--check-hash','--check-import') }
-    if ($IncludeSharp) {
-        Write-Host 'SHARP is licensed only for non-commercial scientific research.' -ForegroundColor Yellow
-        Invoke-Checked $appPython @('scripts\download_models.py','--model','sharp')
-        Invoke-Checked $appPython @('scripts\verify_sharp.py','--check-hash','--check-import')
-    }
-}
+if (-not $colmap) { throw 'CUDA COLMAP is missing. Rerun without -SkipColmapDownload or set GSS_COLMAP to COLMAP.bat.' }
+
 Invoke-Checked $appPython @('-m','pip','check')
-$doctorArgs = @('scripts\doctor.py')
-if ($Device -eq 'CUDA') {
-    $doctorArgs += '--require-cuda'
-    if (-not $SkipModelDownload) { $doctorArgs += '--require-anysplat' }
-}
-Invoke-Checked $appPython $doctorArgs
-if ($Device -eq 'CUDA' -and -not $SkipModelDownload -and -not $SkipInferenceTest) {
-    Write-Host 'Running one real two-view AnySplat CUDA smoke test...' -ForegroundColor Cyan
-    Invoke-Checked $appPython @('scripts\verify_anysplat.py','--check-import','--check-hash','--check-inference')
-}
+Invoke-Checked $appPython @('scripts\doctor.py','--require-custom')
+Invoke-Checked $appPython @('-m','pytest','-q','tests')
 Write-Host 'Setup complete. Double-click Start Studio.cmd.' -ForegroundColor Green

@@ -2,9 +2,8 @@
 setlocal
 cd /d "%~dp0"
 if not exist ".venv\Scripts\python.exe" (
-    echo First run: installing the CPU version and the lightweight model.
-    echo On the NVIDIA workstation use Setup NVIDIA Workstation.cmd instead.
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1" -Device CPU
+    echo First run: installing pretrained-free CUDA reconstruction engine.
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1"
     if errorlevel 1 goto failed
 )
 ".venv\Scripts\python.exe" run.py
