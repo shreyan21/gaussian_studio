@@ -62,7 +62,7 @@ Keep terminal open. Share complete tokenized URL only with trusted testers. Quic
 - Lock zoom, focus, exposure, white balance, lighting, and distance.
 - Avoid motion blur, mirrors, glossy highlights, glass, thin foliage, and featureless surfaces.
 
-The video path extracts up to 80 sharp, evenly spaced frames before reconstruction. Four photographs are normally insufficient for dense 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
+The video path extracts 32, 40, or 48 sharp evenly spaced frames for Quick, Balanced, or High quality. This bounded workload prevents CUDA PatchMatch from appearing to hang on 8 GB and Kaggle GPUs. Four photographs are normally insufficient for dense 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
 
 The pipeline rejects captures when fewer than eight cameras register, less than 55% of the inputs align, or the sparse model has fewer than 500 points. This is intentional: the viewer should not present disconnected noise as a successful 3D scene.
 
@@ -74,6 +74,7 @@ The pipeline rejects captures when fewer than eight cameras register, less than 
 - Use **Quick - 1200 px** after CUDA out-of-memory.
 - High mode is optional and may exceed 8 GB VRAM.
 - Default job timeout is 120 minutes. Override with `GSS_JOB_TIMEOUT_MINUTES` if needed.
+- Dense PatchMatch reports an elapsed-time heartbeat and stops after 60 minutes by default. Override with `GSS_DENSE_TIMEOUT_MINUTES` if required.
 
 ## Kaggle GPU test
 

@@ -2,7 +2,7 @@ import numpy as np
 from PIL import Image
 from plyfile import PlyData, PlyElement
 
-from studio.custom_sfm import _prepare_images, _validate_registration, dense_cloud_to_gaussians, extract_video_frames, find_colmap
+from studio.custom_sfm import _limit_patch_match_sources, _patch_match_profile, _prepare_images, _validate_registration, dense_cloud_to_gaussians, extract_video_frames, find_colmap
 
 
 def test_prepare_images_makes_ordered_equal_square_frames(tmp_path):
@@ -30,6 +30,21 @@ def test_video_frames_are_evenly_selected_and_renamed(tmp_path, monkeypatch):
     output = extract_video_frames(tmp_path / "capture.mp4", tmp_path / "selected", max_frames=12)
     assert [path.name for path in output] == [f"input_{index:03d}.jpg" for index in range(12)]
     assert all(path.is_file() for path in output)
+
+
+def test_patch_match_profiles_bound_dense_work():
+    assert _patch_match_profile(1200) == {"iterations": 3, "samples": 10, "cache_gb": 4, "max_sources": 8}
+    assert _patch_match_profile(1600)["iterations"] == 4
+    assert _patch_match_profile(2000)["iterations"] == 5
+
+
+def test_patch_match_source_views_are_bounded(tmp_path):
+    stereo = tmp_path / "stereo"
+    stereo.mkdir()
+    config = stereo / "patch-match.cfg"
+    config.write_text("0000.jpg\n__auto__, 30\n0001.jpg\n__auto__\n", encoding="utf-8")
+    assert _limit_patch_match_sources(tmp_path, 10) == 2
+    assert config.read_text(encoding="utf-8") == "0000.jpg\n__auto__, 10\n0001.jpg\n__auto__, 10\n"
 
 
 def test_dense_cloud_becomes_valid_oriented_gaussians(tmp_path):

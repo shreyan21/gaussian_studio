@@ -11,7 +11,7 @@
   <p id="filename" class="file-caption">Walk slowly through a completely stationary scene. Keep 70-85% neighbouring overlap.</p>
   <label class="field-title" for="engine"><span class="step">2</span> Reconstruction</label>
   <select id="engine"><option value="custom">Custom SfM + adaptive Gaussian splatting</option></select>
-  <p class="field-note">No downloaded AI checkpoint. Video is reduced to at most 80 sharp, time-distributed keyframes.</p>
+  <p class="field-note">No downloaded AI checkpoint. Video is reduced to 32-48 sharp, time-distributed keyframes based on quality.</p>
   <div class="field-row"><div><label for="device">Compute</label><select id="device"><option value="auto">NVIDIA CUDA (auto)</option><option value="cuda">NVIDIA CUDA</option></select></div><div id="qualityField"><label for="resolution">Detail</label><select id="resolution"><option value="384">Quick - 1200 px</option><option value="512" selected>Balanced - 1600 px</option><option value="768">High - 2000 px</option></select></div></div>
   <p class="field-note">Balanced recommended for RTX A1000 8 GB. High may run out of VRAM.</p>
   <button id="generateBtn" class="primary" type="submit" disabled>Create 3D scene <span aria-hidden="true">↗</span></button>

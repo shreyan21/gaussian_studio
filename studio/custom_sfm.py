@@ -11,6 +11,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -25,6 +27,11 @@ from studio.gaussians import validate
 Progress = Callable[[int, str], None]
 MIN_IMAGES = 12
 MAX_VIDEO_FRAMES = 80
+PATCH_MATCH_PROFILES = {
+    1200: {"iterations": 3, "samples": 10, "cache_gb": 4, "max_sources": 8},
+    1600: {"iterations": 4, "samples": 12, "cache_gb": 8, "max_sources": 12},
+    2000: {"iterations": 5, "samples": 15, "cache_gb": 8, "max_sources": 16},
+}
 
 
 def find_colmap() -> Path | None:
@@ -70,6 +77,62 @@ def _run(executable: Path, *arguments: str) -> None:
         raise RuntimeError(
             f"COLMAP step '{arguments[0]}' failed with exit code {result.returncode}. "
             "Download the job log and check photo overlap, blur, reflections, and CUDA memory."
+        )
+
+
+def _patch_match_profile(max_side: int) -> dict:
+    return PATCH_MATCH_PROFILES[max_side]
+
+
+def _limit_patch_match_sources(workspace: Path, maximum: int) -> int:
+    """Bound automatically selected source views per reference image."""
+    config = workspace / "stereo" / "patch-match.cfg"
+    if not config.is_file():
+        raise RuntimeError("COLMAP did not create stereo/patch-match.cfg during undistortion.")
+    lines = config.read_text(encoding="utf-8").splitlines()
+    replacements = 0
+    for index, line in enumerate(lines):
+        if re.fullmatch(r"__auto__(?:\s*,\s*\d+)?", line.strip()):
+            lines[index] = f"__auto__, {maximum}"
+            replacements += 1
+    if not replacements:
+        raise RuntimeError("COLMAP stereo source-view configuration is invalid.")
+    config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return replacements
+
+
+def _run_dense_process(command: list[str], progress: Progress) -> None:
+    """Run PatchMatch out-of-process with a visible heartbeat and hard timeout."""
+    timeout_minutes = max(5, int(os.environ.get("GSS_DENSE_TIMEOUT_MINUTES", "60")))
+    process = subprocess.Popen(
+        command,
+        text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    started = time.monotonic()
+    while True:
+        try:
+            returncode = process.wait(timeout=15)
+            break
+        except subprocess.TimeoutExpired:
+            elapsed = time.monotonic() - started
+            if elapsed >= timeout_minutes * 60:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                raise RuntimeError(
+                    f"Dense stereo exceeded {timeout_minutes} minutes and was stopped. "
+                    "Retry with Quick - 1200 px and a 20-30 second video."
+                )
+            percent = min(77, 64 + max(1, int(elapsed // 90)))
+            progress(percent, f"Dense CUDA stereo is running ({int(elapsed // 60)} min elapsed)")
+    if returncode:
+        raise RuntimeError(
+            f"COLMAP dense stereo failed with exit code {returncode}. "
+            "Retry with Quick - 1200 px; if it fails again, download the job log."
         )
 
 
@@ -220,15 +283,22 @@ def _reconstruct_cli(
     )
     if not use_gpu:
         raise RuntimeError("Dense custom reconstruction requires NVIDIA CUDA. Select NVIDIA CUDA and retry.")
-    progress(64, "Estimating dense multi-view depth")
-    _run(
-        executable,
+    profile = _patch_match_profile(max_side)
+    _limit_patch_match_sources(dense, profile["max_sources"])
+    progress(64, f"Starting dense CUDA stereo ({profile['iterations']} iterations)")
+    _run_dense_process(
+        _command(executable, (
         "patch_match_stereo",
         "--workspace_path", str(dense),
         "--workspace_format", "COLMAP",
         "--PatchMatchStereo.gpu_index", "0",
         "--PatchMatchStereo.max_image_size", str(max_side),
+        "--PatchMatchStereo.num_iterations", str(profile["iterations"]),
+        "--PatchMatchStereo.num_samples", str(profile["samples"]),
+        "--PatchMatchStereo.cache_size", str(profile["cache_gb"]),
         "--PatchMatchStereo.geom_consistency", "1",
+        )),
+        progress,
     )
     fused = dense / "fused.ply"
     progress(80, "Fusing consistent surfaces")
@@ -294,14 +364,21 @@ def _reconstruct_pycolmap(
         images,
         undistort_options=undistort_options,
     )
-    progress(64, "Estimating dense multi-view depth")
-    patch_options = pycolmap.PatchMatchOptions()
-    patch_options.gpu_index = "0"
-    patch_options.max_image_size = max_side
-    patch_options.geom_consistency = True
-    pycolmap.patch_match_stereo(
-        dense,
-        options=patch_options,
+    profile = _patch_match_profile(max_side)
+    _limit_patch_match_sources(dense, profile["max_sources"])
+    progress(64, f"Starting dense CUDA stereo ({profile['iterations']} iterations)")
+    _run_dense_process(
+        [
+            sys.executable,
+            "-m",
+            "studio.patchmatch_worker",
+            str(dense),
+            str(max_side),
+            str(profile["iterations"]),
+            str(profile["samples"]),
+            str(profile["cache_gb"]),
+        ],
+        progress,
     )
     fused = dense / "fused.ply"
     progress(80, "Fusing consistent surfaces")
