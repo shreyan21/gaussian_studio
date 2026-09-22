@@ -1,6 +1,6 @@
 # Gaussian Scene Studio 3
 
-Pretrained-free multi-view reconstruction for local NVIDIA workstations. Upload ordered overlapping photographs; app estimates camera poses, reconstructs dense surfaces, converts them to adaptive oriented 3D Gaussians, and opens an interactive browser viewer.
+Pretrained-free multi-view reconstruction for local NVIDIA workstations. Upload one slow video or ordered overlapping photographs; the app selects sharp video keyframes, estimates camera poses, reconstructs dense surfaces, converts them to adaptive oriented 3D Gaussians, and opens an interactive browser viewer.
 
 No SHARP, AnySplat, Depth Anything, downloaded reconstruction checkpoint, or cloud inference remains in this version.
 
@@ -55,14 +55,16 @@ Keep terminal open. Share complete tokenized URL only with trusted testers. Quic
 
 ## Capture requirements
 
-- Six images minimum; 20-40 recommended.
+- Use one 20-60 second video, or 12-80 ordered photos (20-40 photos recommended).
 - Keep object and background completely stationary. Move only camera.
-- Capture one ordered smooth circle, then optional slightly higher ring.
+- Walk one slow, smooth circle, then an optional slightly higher ring. Do not rotate the object.
 - Keep 70-85% overlap between neighbors.
 - Lock zoom, focus, exposure, white balance, lighting, and distance.
 - Avoid motion blur, mirrors, glossy highlights, glass, thin foliage, and featureless surfaces.
 
-Four photographs are normally insufficient for dense 360-degree reconstruction. Rotating a shoe while background stays fixed violates camera geometry and causes shattered output.
+The video path extracts up to 80 sharp, evenly spaced frames before reconstruction. Four photographs are normally insufficient for dense 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
+
+The pipeline rejects captures when fewer than eight cameras register, less than 55% of the inputs align, or the sparse model has fewer than 500 points. This is intentional: the viewer should not present disconnected noise as a successful 3D scene.
 
 ## RTX A1000 8 GB settings
 
@@ -75,9 +77,11 @@ Four photographs are normally insufficient for dense 360-degree reconstruction. 
 
 ## Kaggle GPU test
 
-Open `notebooks/Gaussian_Studio_Custom_Kaggle.ipynb`, enable a GPU and internet, then run its single code cell. Notebook installs `pycolmap-cuda12==4.2.0`, starts app, and prints a protected Cloudflare link.
+Import `notebooks/Gaussian_Studio_Custom_Kaggle.ipynb` into Kaggle, enable a GPU and Internet in Notebook options, then run its single code cell. The notebook pulls the latest `master`, installs `pycolmap-cuda12==4.2.0`, starts the app, and prints a protected Cloudflare link. Open the complete URL including `?token=...`; an unprotected URL correctly shows **Access denied**.
 
-Kaggle storage is temporary. Download `scene.ply` immediately after each successful run.
+The Kaggle public-link video limit is 90 MB because Cloudflare Free accepts request bodies up to 100 MB and the multipart request adds overhead. Trim or compress a longer recording before upload. Local workstation mode defaults to 750 MB.
+
+Keep the code cell running while using the site. Kaggle storage is temporary. Download both `scene.ply` and the raw `dense.ply` immediately after each successful run.
 
 ## Manual checks
 
@@ -90,6 +94,7 @@ Kaggle storage is temporary. Download `scene.ply` immediately after each success
 
 - `scene.ply`: full Gaussian scene.
 - `scene.gsb`: bounded browser preview.
+- `dense.ply`: raw geometrically fused COLMAP point cloud.
 - `scene.json`: method, runtime, input count, limitations, and scene framing.
 - `worker.log`: reconstruction evidence and failure details.
 

@@ -7,7 +7,9 @@ import time
 import traceback
 from pathlib import Path
 
-from studio.custom_sfm import reconstruct
+from PIL import Image
+
+from studio.custom_sfm import extract_video_frames, reconstruct
 from studio.gaussians import export_scene
 
 
@@ -25,7 +27,18 @@ def main():
     try:
         if options["engine"] != "custom":
             raise RuntimeError("This build contains only the pretrained-free custom reconstruction engine.")
-        paths = [directory / item["file"] for item in options["inputs"]]
+        video = options.get("video")
+        if video:
+            progress(directory, 3, "Extracting sharp, evenly spaced keyframes from video")
+            paths = extract_video_frames(directory / video["file"], directory / "video-keyframes")
+            with Image.open(paths[0]) as source:
+                thumb = source.copy()
+                thumb.thumbnail((480, 360))
+                thumb.save(directory / "thumbnail.jpg", quality=85)
+            source_type = "video"
+        else:
+            paths = [directory / item["file"] for item in options["inputs"]]
+            source_type = "photos"
         gaussians, meta = reconstruct(
             directory,
             paths,
@@ -33,6 +46,8 @@ def main():
             options["device"] != "cpu",
             lambda percent, message: progress(directory, percent, message),
         )
+        meta["source_type"] = source_type
+        meta["uploaded_count"] = 1 if video else len(paths)
         progress(directory, 94, "Writing Gaussian PLY and browser scene")
         meta["seconds"] = round(time.monotonic() - started, 2)
         export_scene(directory, gaussians, meta)

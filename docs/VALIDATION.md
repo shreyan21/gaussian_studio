@@ -9,7 +9,7 @@ Run:
 .\.venv\Scripts\python.exe scripts\doctor.py --require-custom
 ```
 
-Tests cover upload rules, access-token protection, path restrictions, job persistence, equal-size ordered frame preparation, adaptive Gaussian construction, PLY/GSB export, and viewer assets.
+Tests cover photo and streamed-video upload rules, access-token protection, path restrictions, job persistence, video keyframe selection, registration quality gates, equal-size ordered frame preparation, adaptive Gaussian construction, PLY/GSB export, and viewer assets.
 
 ## RTX A1000 acceptance test
 
@@ -17,11 +17,11 @@ Do not mark hardware validation complete until every item passes on physical wor
 
 1. `nvidia-smi` reports RTX A1000 and no heavy competing process.
 2. Setup completes checksum verification and doctor reports `custom_engine: true` and `cuda: true`.
-3. Capture 20-30 sharp ordered photos around one stationary textured object.
+3. Capture one slow 20-60 second video or 20-30 sharp ordered photos around one stationary textured scene.
 4. Balanced reconstruction completes without CUDA out-of-memory.
 5. At least most images register; COLMAP log shows dense PatchMatch and stereo fusion completion.
 6. Viewer loads result and orbit shows one coherent object/scene, not separated copies.
-7. `scene.ply`, `scene.gsb`, `scene.json`, and `worker.log` download successfully.
+7. `scene.ply`, raw `dense.ply`, `scene.gsb`, `scene.json`, and `worker.log` download successfully.
 8. Restart Studio; completed scene still appears in Recent scenes.
 
 ## Quality failure diagnosis
@@ -31,6 +31,7 @@ Do not mark hardware validation complete until every item passes on physical wor
 - **Holes:** surfaces unseen in inputs or rejected by geometric consistency.
 - **CUDA out-of-memory:** close GPU apps, use Quick mode, or reduce photo count while keeping full coverage.
 - **Sparse/noisy surface:** capture more neighboring views and improve lighting/texture.
+- **Capture rejected:** read the registration counts in the error/log. Do not bypass the quality gate; recapture with slower motion, more texture, and greater overlap.
 
 ## Current evidence boundary
 

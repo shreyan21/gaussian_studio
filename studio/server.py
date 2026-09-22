@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from studio.config import DATA, MAX_IMAGES, MAX_PIXELS, MAX_UPLOAD, ROOT
+from studio.config import DATA, MAX_IMAGES, MAX_PIXELS, MAX_TOTAL_UPLOAD, MAX_UPLOAD, MAX_VIDEO_UPLOAD, ROOT
 from studio.custom_sfm import engine_ready
 from studio.gaussians import export_scene, make_demo
 
@@ -90,22 +90,32 @@ class Jobs:
                 job["scene"] = json.loads((path / "scene.json").read_text())
             return job
 
-    def create(self, images, filenames, options):
+    def create(self, images, filenames, options, video_stream=None):
         with self.lock:
             if self.active:
                 raise HTTPException(409, "A reconstruction is already running. Wait for it or cancel it first.")
             job_id = uuid.uuid4().hex
             path = self.root / job_id
             path.mkdir()
-            for index, image in enumerate(images):
-                image.save(path / ("input.png" if index == 0 else f"input_{index}.png"))
-            thumb = images[0].copy()
-            thumb.thumbnail((480, 360))
-            thumb.save(path / "thumbnail.jpg", quality=85)
+            if video_stream is not None:
+                destination = path / options["video"]["file"]
+                total = 0
+                with destination.open("wb") as output:
+                    while chunk := video_stream.read(1024 * 1024):
+                        total += len(chunk)
+                        if total > MAX_VIDEO_UPLOAD:
+                            raise HTTPException(413, f"Video must be under {MAX_VIDEO_UPLOAD // 1024**2} MB")
+                        output.write(chunk)
+            else:
+                for index, image in enumerate(images):
+                    image.save(path / ("input.png" if index == 0 else f"input_{index}.png"))
+                thumb = images[0].copy()
+                thumb.thumbnail((480, 360))
+                thumb.save(path / "thumbnail.jpg", quality=85)
             atomic_json(path / "request.json", options)
             first_name = Path(filenames[0].replace("\\", "/")).name[:100]
-            name = first_name if len(images) == 1 else f"{first_name} + {len(images)-1} views"
-            job = {"id": job_id, "name": name, "created": datetime.now(timezone.utc).isoformat(), "status": "running", "progress": 0, "message": "Starting reconstruction", "engine": options["engine"], "image_count": len(images)}
+            name = first_name if video_stream is not None or len(images) == 1 else f"{first_name} + {len(images)-1} views"
+            job = {"id": job_id, "name": name, "created": datetime.now(timezone.utc).isoformat(), "status": "running", "progress": 0, "message": "Starting reconstruction", "engine": options["engine"], "image_count": 1 if video_stream is not None else len(images), "source_type": "video" if video_stream is not None else "photos"}
             atomic_json(path / "job.json", job)
             self.active = job_id
             threading.Thread(target=self.run, args=(job_id,), daemon=True).start()
@@ -263,12 +273,9 @@ def create_app(data_dir=None):
                 if not origin_host or origin_host not in allowed_hosts:
                     return JSONResponse({"detail": "Cross-origin request rejected"}, status_code=403)
             if request.url.path == "/api/jobs":
-                raw = bytearray()
-                async for chunk in request.stream():
-                    raw.extend(chunk)
-                    if len(raw) > MAX_UPLOAD * MAX_IMAGES + 1024*1024:
-                        return JSONResponse({"detail": f"Each image must be under 20 MB and at most {MAX_IMAGES} images may be uploaded"}, status_code=413)
-                request._body = bytes(raw)
+                content_length = request.headers.get("content-length")
+                if content_length and content_length.isdigit() and int(content_length) > MAX_TOTAL_UPLOAD:
+                    return JSONResponse({"detail": f"Upload is too large. Videos must be under {MAX_VIDEO_UPLOAD // 1024**2} MB; each photo must be under 20 MB."}, status_code=413)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -276,7 +283,7 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        return {"app": "Gaussian Scene Studio", "version": "3.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "remote_access": bool(access_token)}
+        return {"app": "Gaussian Scene Studio", "version": "3.1.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": MAX_VIDEO_UPLOAD // 1024**2, "remote_access": bool(access_token)}
 
     @app.post("/api/jobs", status_code=202)
     async def upload(
@@ -300,11 +307,32 @@ def create_app(data_dir=None):
         if image is not None:
             uploads.insert(0, image)
         if not uploads:
-            raise HTTPException(422, "Upload at least one image")
+            raise HTTPException(422, "Upload one video or at least 12 overlapping photos")
+        video_extensions = {".mp4", ".mov", ".m4v", ".webm"}
+        video_uploads = [item for item in uploads if (item.content_type or "").startswith("video/") or Path(item.filename or "").suffix.lower() in video_extensions]
+        if video_uploads:
+            if len(video_uploads) != 1 or len(uploads) != 1:
+                raise HTTPException(422, "Upload either one video or a set of photographs, not both")
+            upload_file = video_uploads[0]
+            suffix = Path(upload_file.filename or "video.mp4").suffix.lower()
+            if suffix not in video_extensions:
+                raise HTTPException(415, "Use MP4, MOV, M4V, or WebM video")
+            upload_file.file.seek(0, os.SEEK_END)
+            size = upload_file.file.tell()
+            upload_file.file.seek(0)
+            if size > MAX_VIDEO_UPLOAD:
+                raise HTTPException(413, f"Video must be under {MAX_VIDEO_UPLOAD // 1024**2} MB")
+            if size < 1024:
+                raise HTTPException(415, "The uploaded video is empty or invalid")
+            options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": [], "video": {"file": "input-video" + suffix, "original_name": Path(upload_file.filename or "video").name[:100]}, "view_limit": view_limit}
+            try:
+                return app.state.jobs.create([], [upload_file.filename or "video"], options, video_stream=upload_file.file)
+            finally:
+                await upload_file.close()
         if len(uploads) > MAX_IMAGES:
             raise HTTPException(422, f"Upload at most {MAX_IMAGES} images")
-        if len(uploads) < 6:
-            raise HTTPException(422, "Custom reconstruction needs at least 6 overlapping photographs; 20-40 are recommended")
+        if len(uploads) < 12:
+            raise HTTPException(422, "Custom reconstruction needs at least 12 overlapping photographs, or upload one video")
 
         cleaned, names = [], []
         for upload_file in uploads:
@@ -336,7 +364,7 @@ def create_app(data_dir=None):
             {"file": "input.png" if i == 0 else f"input_{i}.png", "original_name": Path(names[i].replace("\\", "/")).name[:100]}
             for i in range(len(cleaned))
         ]
-        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "view_limit": view_limit}
+        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "video": None, "view_limit": view_limit}
         return app.state.jobs.create(cleaned, names, options)
 
     @app.get("/api/jobs")
@@ -354,14 +382,14 @@ def create_app(data_dir=None):
 
     @app.get("/api/jobs/{job_id}/files/{filename}")
     def asset(job_id: str, filename: str):
-        fixed = {"scene.ply", "scene.gsb", "scene.json", "depth.png", "thumbnail.jpg", "worker.log"}
+        fixed = {"scene.ply", "scene.gsb", "scene.json", "dense.ply", "depth.png", "thumbnail.jpg", "worker.log"}
         is_mask = bool(re.fullmatch(r"object-mask-(?:[0-9]|1[0-5])\.png", filename))
-        is_input = filename == "input.png" or bool(re.fullmatch(r"input_(?:[1-9]|1[0-5])\.png", filename))
+        is_input = filename == "input.png" or bool(re.fullmatch(r"input_(?:[1-9]|[1-7][0-9])\.png", filename))
         if filename not in fixed and not is_input and not is_mask:
             raise HTTPException(404, "File not found")
         folder = app.state.jobs.path(job_id)
         job = app.state.jobs.read(job_id)
-        if filename.startswith("scene.") and job["status"] != "completed":
+        if (filename.startswith("scene.") or filename == "dense.ply") and job["status"] != "completed":
             raise HTTPException(409, "Scene is not ready")
         file = folder / filename
         if not file.is_file():
