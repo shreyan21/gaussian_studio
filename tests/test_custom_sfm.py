@@ -16,6 +16,16 @@ def test_prepare_images_makes_ordered_equal_square_frames(tmp_path):
     assert [Image.open(path).size for path in output] == [(128, 128), (128, 128)]
 
 
+def test_prepare_images_preserves_uniform_video_aspect_ratio(tmp_path):
+    inputs = []
+    for index in range(3):
+        path = tmp_path / f"frame-{index}.png"
+        Image.new("RGB", (80, 120), (20, 40, 60)).save(path)
+        inputs.append(path)
+    output = _prepare_images(inputs, tmp_path / "video-prepared", 100)
+    assert [Image.open(path).size for path in output] == [(67, 100)] * 3
+
+
 def test_video_frames_are_evenly_selected_and_renamed(tmp_path, monkeypatch):
     def fake_ffmpeg(command, **kwargs):
         raw = tmp_path / "video-frames-raw"

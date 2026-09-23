@@ -6,6 +6,14 @@
 - Custom adaptive Gaussian conversion: `studio/custom_sfm.py`.
 - No pretrained neural reconstruction weights are downloaded or executed.
 
+## gsplat 1.5.3
+
+- Official project: https://github.com/nerfstudio-project/gsplat
+- Package: `gsplat==1.5.3`
+- Licence: Apache-2.0.
+- Used to optimize a new Gaussian scene from each user's registered photographs. It does not provide or download pretrained reconstruction weights.
+- Preserve the Apache-2.0 licence and attribution notices when redistributing the dependency.
+
 ## COLMAP 4.2.0
 
 - Official project: https://github.com/colmap/colmap

@@ -30,9 +30,9 @@ def test_home_and_procedural_viewer_without_external_engine(client):
     assert client.get("/static/renderer.js").status_code == 200
     health = client.get("/api/health").json()
     assert health["app"] == "Gaussian Scene Studio"
-    assert health["version"] == "3.3.0"
+    assert health["version"] == "4.0.0"
     assert health["max_images"] == 80
-    assert set(health["engines"]) == {"custom"}
+    assert set(health["engines"]) == {"custom", "gsplat"}
     assert client.get("/api/demo/scene.gsb").content[:4] == b"GSS1"
     assert client.get("/api/demo/scene.json").json()["method"] == "demo"
 

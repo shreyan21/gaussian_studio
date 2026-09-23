@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 if not exist ".venv\Scripts\python.exe" (
-    echo First run: installing pretrained-free CUDA reconstruction engine.
+    echo First run: installing COLMAP and true 3D Gaussian training.
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1"
     if errorlevel 1 goto failed
 )

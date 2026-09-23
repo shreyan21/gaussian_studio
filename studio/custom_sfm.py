@@ -242,6 +242,11 @@ def _sharpness(path: Path) -> float:
     return float(laplacian[2:-2, 2:-2].var())
 
 
+def _frame_signature(path: Path) -> np.ndarray:
+    with Image.open(path) as source:
+        return np.asarray(source.convert("L").resize((64, 48), Image.Resampling.BILINEAR), np.float32)
+
+
 def extract_video_frames(video_path: Path, output: Path, max_frames: int = MAX_VIDEO_FRAMES) -> list[Path]:
     """Decode a video and keep the sharpest frame in each time interval."""
     import imageio_ffmpeg
@@ -251,8 +256,8 @@ def extract_video_frames(video_path: Path, output: Path, max_frames: int = MAX_V
     output.mkdir(parents=True, exist_ok=True)
     command = [
         imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-v", "error", "-i", str(video_path),
-        "-t", "90", "-vf", "fps=2,scale=1600:-2:force_original_aspect_ratio=decrease",
-        "-frames:v", "180", "-q:v", "2", str(raw / "candidate_%04d.jpg"),
+        "-t", "90", "-vf", "fps=3,scale=1600:-2:force_original_aspect_ratio=decrease",
+        "-frames:v", "270", "-q:v", "2", str(raw / "candidate_%04d.jpg"),
     ]
     result = subprocess.run(command, capture_output=True, text=True, timeout=600)
     if result.returncode:
@@ -264,25 +269,56 @@ def extract_video_frames(video_path: Path, output: Path, max_frames: int = MAX_V
         )
     count = min(max_frames, len(candidates))
     edges = np.linspace(0, len(candidates), count + 1, dtype=int)
+    sharpness = {path: _sharpness(path) for path in candidates}
+    signatures = {path: _frame_signature(path) for path in candidates}
+    sharp_scale = max(float(np.median(list(sharpness.values()))), 1.0)
     selected = []
+    previous_signature = None
     for start, stop in zip(edges[:-1], edges[1:]):
         group = candidates[start:max(stop, start + 1)]
-        source = max(group, key=_sharpness)
+        shortlist = sorted(group, key=sharpness.get, reverse=True)[: min(4, len(group))]
+        if previous_signature is None:
+            source = shortlist[0]
+        else:
+            source = max(
+                shortlist,
+                key=lambda path: sharpness[path] / sharp_scale
+                + float(np.mean(np.abs(signatures[path] - previous_signature))) / 32.0,
+            )
         target = output / f"input_{len(selected):03d}.jpg"
         shutil.copy2(source, target)
         selected.append(target)
+        previous_signature = signatures[source]
     return selected
 
 
-def _prepare_images(paths: list[Path], output: Path, max_side: int) -> list[Path]:
+def _prepare_images(
+    paths: list[Path], output: Path, max_side: int, focus_subject: bool = False
+) -> list[Path]:
     output.mkdir(parents=True, exist_ok=True)
+    source_sizes = []
+    for path in paths:
+        with Image.open(path) as source:
+            width, height = source.size
+        if focus_subject:
+            width, height = max(16, round(width * 0.94)), max(16, round(height * 0.94))
+        source_sizes.append((width, height))
+    uniform_sequence = len(set(source_sizes)) == 1
     prepared = []
     for index, path in enumerate(paths):
         with Image.open(path) as source:
             image = source.convert("RGB")
+            if focus_subject:
+                crop_width = max(16, round(image.width * 0.94))
+                crop_height = max(16, round(image.height * 0.94))
+                left, top = (image.width - crop_width) // 2, (image.height - crop_height) // 2
+                image = image.crop((left, top, left + crop_width, top + crop_height))
             image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
-            canvas = Image.new("RGB", (max_side, max_side), (127, 127, 127))
-            canvas.paste(image, ((max_side - image.width) // 2, (max_side - image.height) // 2))
+            if uniform_sequence:
+                canvas = image
+            else:
+                canvas = Image.new("RGB", (max_side, max_side), (127, 127, 127))
+                canvas.paste(image, ((max_side - image.width) // 2, (max_side - image.height) // 2))
             target = output / f"{index:04d}.jpg"
             canvas.save(target, quality=95, subsampling=0)
             prepared.append(target)
@@ -374,6 +410,31 @@ def _pycolmap_camera_focus(reconstruction) -> dict | None:
     )
 
 
+def _train_registered_gaussians(
+    dense: Path,
+    max_side: int,
+    focus: dict | None,
+    focus_subject: bool,
+    progress: Progress,
+) -> tuple[np.ndarray, dict] | None:
+    from studio.gsplat_runtime import gsplat_ready, train_gaussian_scene
+
+    if not gsplat_ready():
+        if os.environ.get("GSS_REQUIRE_GSPLAT", "").strip() == "1":
+            raise RuntimeError(
+                "True 3D Gaussian training was required, but gsplat with CUDA is unavailable. "
+                "Install gsplat==1.5.3 with a CUDA-enabled PyTorch build."
+            )
+        return None
+    try:
+        return train_gaussian_scene(dense, max_side, focus, focus_subject, progress)
+    except Exception as exc:
+        if os.environ.get("GSS_REQUIRE_GSPLAT", "").strip() == "1":
+            raise RuntimeError(f"True 3D Gaussian training failed: {exc}") from exc
+        progress(61, f"True 3DGS unavailable ({exc}); using COLMAP dense fallback")
+        return None
+
+
 def _reconstruct_cli(
     executable: Path,
     images: Path,
@@ -381,7 +442,8 @@ def _reconstruct_cli(
     max_side: int,
     use_gpu: bool,
     progress: Progress,
-) -> tuple[Path, str, dict, dict | None]:
+    focus_subject: bool,
+) -> tuple[Path | np.ndarray, str, dict, dict | None, bool]:
     database, sparse, dense = work / "database.db", work / "sparse", work / "dense"
     sparse.mkdir(parents=True, exist_ok=True)
     gpu = "1" if use_gpu else "0"
@@ -429,6 +491,11 @@ def _reconstruct_cli(
         "--output_type", "COLMAP",
         "--max_image_size", str(max_side),
     )
+    trained = _train_registered_gaussians(dense, max_side, focus, focus_subject, progress)
+    if trained is not None:
+        gaussians, training_stats = trained
+        quality.update(training_stats)
+        return gaussians, "COLMAP 4.2 CUDA + trained gsplat", quality, focus, True
     if not use_gpu:
         raise RuntimeError("Dense custom reconstruction requires NVIDIA CUDA. Select NVIDIA CUDA and retry.")
     profile = _patch_match_profile(max_side)
@@ -466,7 +533,7 @@ def _reconstruct_cli(
 
     fused, fusion_stats = _run_fusion_recovery(dense, fuse, progress)
     quality.update(fusion_stats)
-    return fused, "COLMAP 4.2 CUDA command-line", quality, focus
+    return fused, "COLMAP 4.2 CUDA command-line", quality, focus, False
 
 
 def _reconstruct_pycolmap(
@@ -475,7 +542,8 @@ def _reconstruct_pycolmap(
     max_side: int,
     use_gpu: bool,
     progress: Progress,
-) -> tuple[Path, str, dict, dict | None]:
+    focus_subject: bool,
+) -> tuple[Path | np.ndarray, str, dict, dict | None, bool]:
     import pycolmap
 
     if not use_gpu or not getattr(pycolmap, "has_cuda", False):
@@ -518,6 +586,11 @@ def _reconstruct_pycolmap(
         images,
         undistort_options=undistort_options,
     )
+    trained = _train_registered_gaussians(dense, max_side, focus, focus_subject, progress)
+    if trained is not None:
+        gaussians, training_stats = trained
+        quality.update(training_stats)
+        return gaussians, f"PyCOLMAP {pycolmap.__version__} CUDA + trained gsplat", quality, focus, True
     profile = _patch_match_profile(max_side)
     dense_gpu_index = _gpu_indices()
     _limit_patch_match_sources(dense, profile["max_sources"])
@@ -553,7 +626,7 @@ def _reconstruct_pycolmap(
 
     fused, fusion_stats = _run_fusion_recovery(dense, fuse, progress)
     quality.update(fusion_stats)
-    return fused, f"PyCOLMAP {pycolmap.__version__} CUDA", quality, focus
+    return fused, f"PyCOLMAP {pycolmap.__version__} CUDA", quality, focus, False
 
 
 def _field(vertex, *names: str, default=None):
@@ -721,27 +794,45 @@ def reconstruct(
     work = directory / "custom-work"
     images = work / "images"
     progress(7, f"Preparing {len(input_paths)} ordered photographs")
-    _prepare_images(input_paths, images, max_side)
+    _prepare_images(input_paths, images, max_side, focus_subject=focus_subject)
     executable = find_colmap()
     if executable is not None:
-        fused, backend, quality, focus = _reconstruct_cli(executable, images, work, max_side, use_gpu, progress)
+        result, backend, quality, focus, trained = _reconstruct_cli(
+            executable, images, work, max_side, use_gpu, progress, focus_subject
+        )
     else:
-        fused, backend, quality, focus = _reconstruct_pycolmap(images, work, max_side, use_gpu, progress)
-    progress(88, "Filtering background fragments and building Gaussians" if focus_subject else "Building adaptive oriented Gaussians")
-    dense_points = len(PlyData.read(str(fused))["vertex"])
+        result, backend, quality, focus, trained = _reconstruct_pycolmap(
+            images, work, max_side, use_gpu, progress, focus_subject
+        )
     focus_stats = {}
-    gaussians = dense_cloud_to_gaussians(
-        fused,
-        focus=focus if focus_subject else None,
-        focus_stats=focus_stats,
-    )
-    shutil.copy2(fused, directory / "dense.ply")
+    if trained:
+        progress(92, "Finalizing trained 3D Gaussian scene")
+        gaussians = result
+        dense_points = int(quality.get("seed_points", len(gaussians)))
+        from studio.gsplat_runtime import write_support_cloud
+
+        write_support_cloud(directory / "dense.ply", gaussians)
+        focus_stats.update({
+            "subject_focus_requested": bool(quality.get("subject_focus_requested", focus_subject)),
+            "subject_focus_applied": bool(quality.get("subject_focus_applied", False)),
+            "focused_points": len(gaussians),
+        })
+    else:
+        fused = result
+        progress(88, "Filtering background fragments and building Gaussians" if focus_subject else "Building adaptive oriented Gaussians")
+        dense_points = len(PlyData.read(str(fused))["vertex"])
+        gaussians = dense_cloud_to_gaussians(
+            fused,
+            focus=focus if focus_subject else None,
+            focus_stats=focus_stats,
+        )
+        shutil.copy2(fused, directory / "dense.ply")
     viewer_flip = np.array([1, -1, -1], dtype=np.float64)
     source_camera = (np.asarray(focus["source_camera"]) * viewer_flip).tolist() if focus else [0, 0, 0]
     return gaussians, {
         "fov_y": 50.0,
         "image_size": [max_side, max_side],
-        "engine": "Custom SfM + adaptive Gaussian splatting",
+        "engine": "COLMAP cameras + trained 3D Gaussian splatting" if trained else "Custom SfM + adaptive Gaussian splatting",
         "method": "custom",
         "device": "cuda" if use_gpu else "cpu",
         "backend": backend,
@@ -752,6 +843,10 @@ def reconstruct(
         **focus_stats,
         **quality,
         "pretrained_weights": False,
-        "licence": "Application MIT; COLMAP BSD-3-Clause. See docs/MODEL-LICENSES.md.",
-        "limitation": "Measured per-scene reconstruction from registered views. Central-subject focus removes distant fragments but cannot recover unseen or moving petals; dense.ply retains the uncropped COLMAP cloud.",
+        "licence": "Application MIT; COLMAP BSD-3-Clause; gsplat Apache-2.0 when trained 3DGS is used. See docs/MODEL-LICENSES.md.",
+        "limitation": (
+            "Trained 3D Gaussian scene from registered views. Central-subject focus suppresses distant floaters, but no method can recover unseen surfaces or petals that moved between frames. dense.ply contains the trained Gaussian centers."
+            if trained else
+            "Measured per-scene reconstruction from registered views. Central-subject focus removes distant fragments but cannot recover unseen or moving petals; dense.ply retains the uncropped COLMAP cloud."
+        ),
     }

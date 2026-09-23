@@ -23,6 +23,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from studio.config import DATA, MAX_IMAGES, MAX_PIXELS, MAX_TOTAL_UPLOAD, MAX_UPLOAD, MAX_VIDEO_UPLOAD, ROOT
 from studio.custom_sfm import engine_ready
+from studio.gsplat_runtime import gsplat_ready
 from studio.gaussians import export_scene, make_demo
 
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
@@ -283,7 +284,7 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        return {"app": "Gaussian Scene Studio", "version": "3.3.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": MAX_VIDEO_UPLOAD // 1024**2, "remote_access": bool(access_token)}
+        return {"app": "Gaussian Scene Studio", "version": "4.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready(), "gsplat": gsplat_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": MAX_VIDEO_UPLOAD // 1024**2, "remote_access": bool(access_token)}
 
     @app.post("/api/jobs", status_code=202)
     async def upload(

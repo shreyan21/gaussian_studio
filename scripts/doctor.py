@@ -7,6 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from studio.custom_sfm import engine_ready, find_colmap
+from studio.gsplat_runtime import gsplat_ready
 
 
 def check():
@@ -20,6 +21,7 @@ def check():
         "ram_gb": round(psutil.virtual_memory().total / 1024**3, 1),
         "available_ram_gb": round(psutil.virtual_memory().available / 1024**3, 1),
         "custom_engine": engine_ready(),
+        "true_3dgs": gsplat_ready(),
         "colmap": str(executable) if executable else None,
         "cuda": False,
     }
