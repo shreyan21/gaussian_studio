@@ -22,10 +22,11 @@ from studio.gaussians import validate
 Progress = Callable[[int, str], None]
 
 TRAINING_PROFILES = {
-    1200: {"image_side": 720, "steps": 3_500, "max_splats": 500_000},
-    1600: {"image_side": 900, "steps": 5_500, "max_splats": 750_000},
-    2000: {"image_side": 1080, "steps": 7_500, "max_splats": 1_000_000},
+    1200: {"image_side": 720, "steps": 6_000, "max_splats": 500_000},
+    1600: {"image_side": 900, "steps": 9_000, "max_splats": 750_000},
+    2000: {"image_side": 1080, "steps": 12_000, "max_splats": 1_000_000},
 }
+SUBJECT_CROP_RATIO = 0.72
 
 
 def gsplat_ready() -> bool:
@@ -56,7 +57,29 @@ def _image_pose_matrix(image) -> np.ndarray:
     return matrix
 
 
-def _load_training_views(workspace: Path, image_side: int, focus_subject: bool):
+def _subject_crop_bounds(
+    width: int,
+    height: int,
+    K: np.ndarray,
+    viewmat: np.ndarray,
+    target: np.ndarray,
+    ratio: float = SUBJECT_CROP_RATIO,
+) -> tuple[int, int, int, int]:
+    """Return an in-frame crop centered on the reconstructed subject projection."""
+    crop_width = min(width, max(32, round(width * ratio)))
+    crop_height = min(height, max(32, round(height * ratio)))
+    camera_point = viewmat[:3, :3] @ np.asarray(target, np.float32) + viewmat[:3, 3]
+    if np.isfinite(camera_point).all() and camera_point[2] > 1e-6:
+        center_x = float(K[0, 0] * camera_point[0] / camera_point[2] + K[0, 2])
+        center_y = float(K[1, 1] * camera_point[1] / camera_point[2] + K[1, 2])
+    else:
+        center_x, center_y = width / 2, height / 2
+    left = int(np.clip(round(center_x - crop_width / 2), 0, width - crop_width))
+    top = int(np.clip(round(center_y - crop_height / 2), 0, height - crop_height))
+    return left, top, left + crop_width, top + crop_height
+
+
+def _load_training_views(workspace: Path, image_side: int, focus: dict | None):
     import pycolmap
 
     reconstruction = pycolmap.Reconstruction(workspace / "sparse")
@@ -85,10 +108,12 @@ def _load_training_views(workspace: Path, image_side: int, focus_subject: bool):
             ],
             dtype=np.float32,
         )
-        if focus_subject:
-            crop_width, crop_height = max(32, round(width * 0.94)), max(32, round(height * 0.94))
-            left, top = (width - crop_width) // 2, (height - crop_height) // 2
-            frame = frame.crop((left, top, left + crop_width, top + crop_height))
+        viewmat = _image_pose_matrix(image)
+        if focus is not None:
+            left, top, right, bottom = _subject_crop_bounds(
+                width, height, K, viewmat, np.asarray(focus["target"], np.float32)
+            )
+            frame = frame.crop((left, top, right, bottom))
             K[0, 2] -= left
             K[1, 2] -= top
             width, height = frame.size
@@ -103,7 +128,7 @@ def _load_training_views(workspace: Path, image_side: int, focus_subject: bool):
                 "name": image.name,
                 "pixels": np.asarray(frame, dtype=np.uint8).copy(),
                 "K": K,
-                "viewmat": _image_pose_matrix(image),
+                "viewmat": viewmat,
             }
         )
 
@@ -118,11 +143,23 @@ def _load_training_views(workspace: Path, image_side: int, focus_subject: bool):
     xyz, colors = xyz[finite], np.clip(colors[finite], 1 / 255, 254 / 255)
     if len(xyz) < 500:
         raise RuntimeError(f"COLMAP produced only {len(xyz):,} usable sparse seeds for 3DGS training.")
+    seed_points_before_focus = len(xyz)
+    seed_focus_applied = False
+    if focus is not None:
+        target = np.asarray(focus["target"], np.float32)
+        focused = np.linalg.norm(xyz - target, axis=1) <= float(focus["camera_distance"] * 0.65)
+        if np.count_nonzero(focused) >= 500:
+            xyz, colors = xyz[focused], colors[focused]
+            seed_focus_applied = True
 
     centers = np.asarray([image.projection_center() for image in registered], dtype=np.float32)
     scene_center = np.mean(centers, axis=0)
     scene_scale = max(float(np.linalg.norm(centers - scene_center, axis=1).max()), 1e-3)
-    return views, xyz, colors, scene_scale
+    return views, xyz, colors, scene_scale, {
+        "training_subject_crop_ratio": SUBJECT_CROP_RATIO if focus is not None else 1.0,
+        "seed_points_before_focus": seed_points_before_focus,
+        "seed_focus_applied": seed_focus_applied,
+    }
 
 
 def _ssim(prediction, target):
@@ -182,7 +219,13 @@ def _viewer_quaternions(quaternions: np.ndarray) -> np.ndarray:
     return np.column_stack((-x, w, -z, y)).astype(np.float32)
 
 
-def _export_arrays(splats, focus: dict | None, maximum: int = 1_250_000):
+def _export_arrays(
+    splats,
+    focus: dict | None,
+    scene_scale: float | None = None,
+    maximum: int = 1_250_000,
+    export_stats: dict | None = None,
+):
     import torch
 
     means = splats["means"].detach().cpu().numpy().astype(np.float32)
@@ -191,6 +234,7 @@ def _export_arrays(splats, focus: dict | None, maximum: int = 1_250_000):
     quats /= np.maximum(np.linalg.norm(quats, axis=1, keepdims=True), 1e-8)
     opacities = torch.sigmoid(splats["opacities"]).detach().cpu().numpy().astype(np.float32)
     colors = torch.sigmoid(splats["colors"]).detach().cpu().numpy().astype(np.float32)
+    input_gaussians = len(means)
     finite = (
         np.isfinite(means).all(axis=1)
         & np.isfinite(scales).all(axis=1)
@@ -198,7 +242,19 @@ def _export_arrays(splats, focus: dict | None, maximum: int = 1_250_000):
         & np.isfinite(opacities)
         & np.isfinite(colors).all(axis=1)
     )
-    keep = finite & (opacities >= 0.02) & (scales > 0).all(axis=1)
+    keep = finite & (opacities >= 0.03) & (scales > 0).all(axis=1)
+    scale_limit = None
+    maximum_scale = np.max(scales, axis=1)
+    minimum_scale = np.min(scales, axis=1)
+    valid_scales = maximum_scale[keep]
+    if len(valid_scales):
+        robust_limit = max(
+            float(np.median(valid_scales) * 12.0),
+            float(np.percentile(valid_scales, 99.0)),
+        )
+        scale_limit = robust_limit if scene_scale is None else min(robust_limit, scene_scale * 0.08)
+        keep &= maximum_scale <= scale_limit
+        keep &= maximum_scale / np.maximum(minimum_scale, 1e-8) <= 50.0
     focus_applied = False
     if focus is not None:
         target = np.asarray(focus["target"], dtype=np.float32)
@@ -221,7 +277,15 @@ def _export_arrays(splats, focus: dict | None, maximum: int = 1_250_000):
     gaussians[:, 4:7] = np.maximum(scales, 1e-7)
     gaussians[:, 8:12] = quats
     gaussians[:, 12:15] = np.clip(colors, 0, 1)
-    return validate(gaussians), focus_applied
+    gaussians = validate(gaussians)
+    if export_stats is not None:
+        export_stats.update({
+            "optimized_gaussians": input_gaussians,
+            "exported_gaussians": len(gaussians),
+            "export_removed_gaussians": input_gaussians - len(gaussians),
+            "export_scale_limit": round(float(scale_limit), 7) if scale_limit is not None else None,
+        })
+    return gaussians, focus_applied
 
 
 def write_support_cloud(path: Path, gaussians: np.ndarray) -> None:
@@ -255,8 +319,8 @@ def train_gaussian_scene(
 
     profile = _training_profile(max_side)
     progress(58, "Loading registered views for true 3D Gaussian training")
-    views, xyz, seed_colors, scene_scale = _load_training_views(
-        workspace, profile["image_side"], focus_subject
+    views, xyz, seed_colors, scene_scale, load_stats = _load_training_views(
+        workspace, profile["image_side"], focus if focus_subject else None
     )
     device = "cuda:0"
     torch.manual_seed(42)
@@ -265,8 +329,8 @@ def train_gaussian_scene(
     steps = profile["steps"]
     strategy = DefaultStrategy(
         refine_start_iter=min(300, max(100, steps // 10)),
-        refine_stop_iter=max(500, int(steps * 0.82)),
-        reset_every=max(1_200, steps // 2),
+        refine_stop_iter=max(500, int(steps * 0.9)),
+        reset_every=min(3_000, max(1_200, steps // 2)),
         refine_every=100,
         verbose=False,
     )
@@ -318,7 +382,13 @@ def train_gaussian_scene(
         if step % report_every == 0 or step == steps - 1:
             percent = min(91, 60 + round(31 * (step + 1) / steps))
             progress(percent, f"Training true 3D Gaussians: {step + 1:,}/{steps:,} steps, {len(splats['means']):,} splats")
-    gaussians, focus_applied = _export_arrays(splats, focus if focus_subject else None)
+    export_stats = {}
+    gaussians, focus_applied = _export_arrays(
+        splats,
+        focus if focus_subject else None,
+        scene_scale=scene_scale,
+        export_stats=export_stats,
+    )
     version = getattr(gsplat, "__version__", "1.5.3")
     stats = {
         "representation": "trained-3dgs",
@@ -329,8 +399,11 @@ def train_gaussian_scene(
         "trained_gaussians": len(gaussians),
         "training_image_side": profile["image_side"],
         "training_splat_budget": profile["max_splats"],
+        "recommended_splat_scale": 0.85,
         "subject_focus_requested": focus_subject,
         "subject_focus_applied": focus_applied,
+        **load_stats,
+        **export_stats,
     }
     del splats, optimizers
     torch.cuda.empty_cache()

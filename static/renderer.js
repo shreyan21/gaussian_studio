@@ -81,7 +81,8 @@ export class GaussianViewer {
         if (buffer.byteLength < 16 || header.getUint32(0, true) !== 0x31535347 || header.getUint32(8, true) !== 16) throw Error('Unsupported Gaussian scene format.');
         const count = header.getUint32(4, true);
         if (count < 1 || count > 1500000 || buffer.byteLength !== 16 + count * 64) throw Error('The Gaussian scene download is incomplete or too large.');
-        this.count = count; this.meta = meta;
+        this.count = count; this.meta = meta; this.scale = Number(meta?.recommended_splat_scale || 1);
+        const sizeControl = document.getElementById('splatSize'); if (sizeControl) sizeControl.value = String(this.scale);
         const g = new Float32Array(buffer, 16), gl = this.gl, w = 1024, h = Math.ceil(count * 4 / w), data = new Float32Array(w * h * 4); data.set(g);
         gl.bindTexture(gl.TEXTURE_2D, this.texture); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, data);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.indices); gl.bufferData(gl.ARRAY_BUFFER, Uint32Array.from({ length: count }, (_, i) => i), gl.DYNAMIC_DRAW);

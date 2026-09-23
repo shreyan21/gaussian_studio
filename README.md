@@ -65,11 +65,11 @@ Keep terminal open. Share complete tokenized URL only with trusted testers. Quic
 - Keep the subject roughly centered and make one continuous orbit.
 - Ordinary exposure and focus variation is tolerated, but moving petals and unseen surfaces cannot be reconstructed reliably.
 
-The video path extracts 32, 40, or 48 sharp evenly spaced frames for Quick, Balanced, or High quality. Four photographs are normally insufficient for a 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
+The video path extracts 32, 40, or 48 sharp evenly spaced frames for Quick, Balanced, or High quality. The corresponding 3DGS profiles use 6,000, 9,000, or 12,000 optimization steps and enforce GPU-memory splat budgets. Four photographs are normally insufficient for a 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
 
 The pipeline rejects captures when fewer than eight cameras register, less than 55% of the inputs align, or the sparse model has fewer than 500 points. This is intentional: the viewer should not present disconnected noise as a successful 3D scene.
 
-For a flower or single object, leave **Focus central subject** enabled. Training uses a conservative central crop, and the app intersects recovered camera rays to remove distant floaters from the exported scene. Disable it only when the surrounding environment is intentionally part of the scene.
+For a flower or single object, leave **Focus central subject** enabled. The app triangulates the subject from recovered camera rays, follows its projected position in every training view, excludes distant background seeds before optimization, and filters oversized streak splats during export. Disable it only when the surrounding environment is intentionally part of the scene.
 
 ## RTX A1000 8 GB settings
 
