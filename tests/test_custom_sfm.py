@@ -2,7 +2,7 @@ import numpy as np
 from PIL import Image
 from plyfile import PlyData, PlyElement
 
-from studio.custom_sfm import _focus_from_camera_rays, _gpu_indices, _limit_patch_match_sources, _patch_match_profile, _prepare_images, _validate_registration, dense_cloud_to_gaussians, extract_video_frames, find_colmap
+from studio.custom_sfm import _focus_from_camera_rays, _gpu_indices, _limit_patch_match_sources, _patch_match_profile, _prepare_images, _run_fusion_recovery, _validate_registration, dense_cloud_to_gaussians, extract_video_frames, find_colmap
 
 
 def test_prepare_images_makes_ordered_equal_square_frames(tmp_path):
@@ -54,6 +54,22 @@ def test_patch_match_source_views_are_bounded(tmp_path):
     assert config.read_text(encoding="utf-8") == "0000.jpg\n__auto__, 10\n0001.jpg\n__auto__, 10\n"
 
 
+def test_sparse_dense_fusion_automatically_relaxes_confidence(tmp_path):
+    counts = {"strict-geometric": 2536, "relaxed-geometric": 14_000}
+    attempts = []
+
+    def fuse(target, profile):
+        attempts.append(profile["name"])
+        count = counts[profile["name"]]
+        data = np.zeros(count, dtype=[("x", "f4"), ("y", "f4"), ("z", "f4")])
+        PlyData([PlyElement.describe(data, "vertex")], text=False).write(target)
+
+    path, stats = _run_fusion_recovery(tmp_path, fuse, lambda *_: None)
+    assert attempts == ["strict-geometric", "relaxed-geometric"]
+    assert path.name == "fused-relaxed-geometric.ply"
+    assert stats == {"fusion_profile": "relaxed-geometric", "fusion_recovered": True, "fusion_points": 14_000}
+
+
 def test_camera_rays_recover_central_subject():
     target = np.array([0.0, 0.0, -3.0])
     centers = np.array([[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0]], dtype=float)
@@ -79,6 +95,19 @@ def test_dense_cloud_becomes_valid_oriented_gaussians(tmp_path):
     assert np.all(result[:, 4:7] > 0)
     np.testing.assert_allclose(np.linalg.norm(result[:, 8:12], axis=1), 1, atol=1e-5)
     np.testing.assert_allclose(result[:, 12], 180 / 255, atol=1e-5)
+
+
+def test_low_density_recovered_cloud_still_builds_covering_gaussians(tmp_path):
+    side = 50
+    yy, xx = np.mgrid[:side, :side]
+    data = np.zeros(side * side, dtype=[("x", "f4"), ("y", "f4"), ("z", "f4"), ("nx", "f4"), ("ny", "f4"), ("nz", "f4"), ("red", "u1"), ("green", "u1"), ("blue", "u1")])
+    data["x"], data["y"], data["z"] = xx.ravel() / side, yy.ravel() / side, 0
+    data["nz"], data["red"], data["green"], data["blue"] = 1, 180, 80, 30
+    path = tmp_path / "recovered.ply"
+    PlyData([PlyElement.describe(data, "vertex")], text=False).write(path)
+    result = dense_cloud_to_gaussians(path)
+    assert len(result) >= 2_000
+    assert np.median(result[:, 4]) > 0
 
 
 def test_dense_cloud_focus_crops_distant_background(tmp_path):

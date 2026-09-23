@@ -283,7 +283,7 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        return {"app": "Gaussian Scene Studio", "version": "3.2.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": MAX_VIDEO_UPLOAD // 1024**2, "remote_access": bool(access_token)}
+        return {"app": "Gaussian Scene Studio", "version": "3.3.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": MAX_VIDEO_UPLOAD // 1024**2, "remote_access": bool(access_token)}
 
     @app.post("/api/jobs", status_code=202)
     async def upload(

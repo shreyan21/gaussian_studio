@@ -27,11 +27,39 @@ from studio.gaussians import validate
 Progress = Callable[[int, str], None]
 MIN_IMAGES = 12
 MAX_VIDEO_FRAMES = 80
+DENSE_TARGET_POINTS = 10_000
+DENSE_MINIMUM_POINTS = 2_000
 PATCH_MATCH_PROFILES = {
     1200: {"iterations": 3, "samples": 10, "cache_gb": 4, "max_sources": 8},
     1600: {"iterations": 4, "samples": 12, "cache_gb": 8, "max_sources": 12},
     2000: {"iterations": 5, "samples": 15, "cache_gb": 8, "max_sources": 16},
 }
+FUSION_PROFILES = (
+    {
+        "name": "strict-geometric",
+        "input_type": "geometric",
+        "min_num_pixels": 5,
+        "max_reproj_error": 2.0,
+        "max_depth_error": 0.01,
+        "max_normal_error": 10.0,
+    },
+    {
+        "name": "relaxed-geometric",
+        "input_type": "geometric",
+        "min_num_pixels": 3,
+        "max_reproj_error": 3.0,
+        "max_depth_error": 0.02,
+        "max_normal_error": 20.0,
+    },
+    {
+        "name": "photometric-recovery",
+        "input_type": "photometric",
+        "min_num_pixels": 3,
+        "max_reproj_error": 3.0,
+        "max_depth_error": 0.03,
+        "max_normal_error": 25.0,
+    },
+)
 
 
 def find_colmap() -> Path | None:
@@ -154,6 +182,53 @@ def _run_dense_process(command: list[str], progress: Progress) -> None:
             f"COLMAP dense stereo failed with exit code {returncode}. "
             "Retry with Quick - 1200 px; if it fails again, download the job log."
         )
+
+
+def _ply_point_count(path: Path) -> int:
+    if not path.is_file():
+        return 0
+    try:
+        return len(PlyData.read(str(path))["vertex"])
+    except Exception:
+        return 0
+
+
+def _run_fusion_recovery(dense: Path, fuse, progress: Progress) -> tuple[Path, dict]:
+    """Prefer consistent geometry, then recover a sparse result without rerunning PatchMatch."""
+    best_path, best_count, best_name = None, 0, None
+    failures = []
+    for index, profile in enumerate(FUSION_PROFILES):
+        if index == 0:
+            message = "Fusing consistent surfaces"
+        elif index == 1:
+            message = f"Dense cloud has only {best_count:,} points; relaxing fusion confidence"
+        else:
+            message = f"Dense cloud has only {best_count:,} points; trying photometric recovery"
+        progress(80 + index * 3, message)
+        target = dense / f"fused-{profile['name']}.ply"
+        try:
+            fuse(target, profile)
+        except Exception as exc:
+            failures.append(f"{profile['name']}: {exc}")
+            continue
+        count = _ply_point_count(target)
+        if count > best_count:
+            best_path, best_count, best_name = target, count, profile["name"]
+        if count >= DENSE_TARGET_POINTS:
+            break
+    if best_path is None:
+        detail = "; ".join(failures) if failures else "no point cloud file was written"
+        raise RuntimeError(f"Dense fusion failed after automatic recovery: {detail}")
+    if best_count < DENSE_MINIMUM_POINTS:
+        raise RuntimeError(
+            f"Dense reconstruction produced only {best_count:,} points after automatic recovery. "
+            "Record a slower orbit with the flower and background completely still."
+        )
+    return best_path, {
+        "fusion_profile": best_name,
+        "fusion_recovered": best_name != "strict-geometric",
+        "fusion_points": best_count,
+    }
 
 
 def _sharpness(path: Path) -> float:
@@ -374,19 +449,23 @@ def _reconstruct_cli(
         )),
         progress,
     )
-    fused = dense / "fused.ply"
-    progress(80, "Fusing consistent surfaces")
-    _run(
-        executable,
-        "stereo_fusion",
-        "--workspace_path", str(dense),
-        "--workspace_format", "COLMAP",
-        "--input_type", "geometric",
-        "--output_path", str(fused),
-        "--StereoFusion.max_image_size", str(max_side),
-    )
-    if not fused.is_file():
-        raise RuntimeError("Dense fusion completed without a point cloud. Capture more overlapping, textured views.")
+    def fuse(target: Path, fusion: dict) -> None:
+        _run(
+            executable,
+            "stereo_fusion",
+            "--workspace_path", str(dense),
+            "--workspace_format", "COLMAP",
+            "--input_type", fusion["input_type"],
+            "--output_path", str(target),
+            "--StereoFusion.max_image_size", str(max_side),
+            "--StereoFusion.min_num_pixels", str(fusion["min_num_pixels"]),
+            "--StereoFusion.max_reproj_error", str(fusion["max_reproj_error"]),
+            "--StereoFusion.max_depth_error", str(fusion["max_depth_error"]),
+            "--StereoFusion.max_normal_error", str(fusion["max_normal_error"]),
+        )
+
+    fused, fusion_stats = _run_fusion_recovery(dense, fuse, progress)
+    quality.update(fusion_stats)
     return fused, "COLMAP 4.2 CUDA command-line", quality, focus
 
 
@@ -457,19 +536,23 @@ def _reconstruct_pycolmap(
         ],
         progress,
     )
-    fused = dense / "fused.ply"
-    progress(80, "Fusing consistent surfaces")
-    fusion_options = pycolmap.StereoFusionOptions()
-    fusion_options.max_image_size = max_side
-    pycolmap.stereo_fusion(
-        fused,
-        dense,
-        input_type="geometric",
-        output_type="PLY",
-        options=fusion_options,
-    )
-    if not fused.is_file():
-        raise RuntimeError("Dense fusion completed without a point cloud. Capture more overlapping, textured views.")
+    def fuse(target: Path, fusion: dict) -> None:
+        fusion_options = pycolmap.StereoFusionOptions()
+        fusion_options.max_image_size = max_side
+        fusion_options.min_num_pixels = fusion["min_num_pixels"]
+        fusion_options.max_reproj_error = fusion["max_reproj_error"]
+        fusion_options.max_depth_error = fusion["max_depth_error"]
+        fusion_options.max_normal_error = fusion["max_normal_error"]
+        pycolmap.stereo_fusion(
+            target,
+            dense,
+            input_type=fusion["input_type"],
+            output_type="PLY",
+            options=fusion_options,
+        )
+
+    fused, fusion_stats = _run_fusion_recovery(dense, fuse, progress)
+    quality.update(fusion_stats)
     return fused, f"PyCOLMAP {pycolmap.__version__} CUDA", quality, focus
 
 
@@ -520,7 +603,7 @@ def _remove_small_components(xyz, normals, colors, local, spacing: float):
     component_sizes = np.bincount(roots, weights=counts, minlength=len(voxels))
     minimum = max(100, int(component_sizes.max(initial=0) * 0.02))
     keep = component_sizes[roots[inverse]] >= minimum
-    if keep.sum() < 10_000:
+    if keep.sum() < max(800, int(len(xyz) * 0.35)):
         return xyz, normals, colors, local, 0
     removed = int(len(xyz) - keep.sum())
     return xyz[keep], normals[keep], colors[keep], local[keep], removed
@@ -534,8 +617,11 @@ def dense_cloud_to_gaussians(
 ) -> np.ndarray:
     vertex = PlyData.read(str(path))["vertex"]
     total = len(vertex)
-    if total < 10_000:
-        raise ValueError(f"Dense reconstruction produced only {total:,} points. Add more sharp overlapping views.")
+    if total < DENSE_MINIMUM_POINTS:
+        raise ValueError(
+            f"Dense reconstruction produced only {total:,} points after automatic recovery. "
+            "Add more sharp overlapping views."
+        )
     stride = max(1, math.ceil(total / max_gaussians))
     indices = np.arange(0, total, stride, dtype=np.int64)[:max_gaussians]
     xyz = np.column_stack([_field(vertex, axis)[indices] for axis in ("x", "y", "z")]).astype(np.float32)
@@ -565,7 +651,7 @@ def dense_cloud_to_gaussians(
         focus_radius = float(focus["camera_distance"] * 0.42)
         subject_distance = np.linalg.norm(xyz - focus_target, axis=1)
         subject_keep = subject_distance <= focus_radius
-        minimum = max(10_000, int(len(xyz) * 0.05))
+        minimum = max(800, int(len(xyz) * 0.05))
         if subject_keep.sum() >= minimum:
             xyz, normals, colors = xyz[subject_keep], normals[subject_keep], colors[subject_keep]
             focus_applied = True
@@ -606,7 +692,12 @@ def dense_cloud_to_gaussians(
     quaternion /= np.linalg.norm(quaternion, axis=1, keepdims=True)
 
     low, high = np.percentile(local, [1, 99])
-    tangent = np.clip(local * 0.72, max(low * 0.5, 1e-6), max(high * 1.2, 1e-5))
+    coverage_boost = float(np.clip((DENSE_TARGET_POINTS / max(len(xyz), 1)) ** 0.25, 1.0, 1.6))
+    tangent = np.clip(
+        local * 0.72 * coverage_boost,
+        max(low * 0.5, 1e-6),
+        max(high * 1.2 * coverage_boost, 1e-5),
+    )
     gaussians = np.zeros((len(xyz), 16), dtype=np.float32)
     gaussians[:, :3] = xyz
     gaussians[:, 3] = 0.86

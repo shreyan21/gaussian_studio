@@ -4,6 +4,8 @@ Pretrained-free multi-view reconstruction for local NVIDIA workstations. Upload 
 
 No SHARP, AnySplat, Depth Anything, downloaded reconstruction checkpoint, or cloud inference remains in this version.
 
+Dense fusion now retries weak results automatically: strict geometric consistency first, relaxed geometric fusion second, and a photometric recovery pass only when necessary. This avoids discarding otherwise usable small-object captures at the very end of a run.
+
 ## What "custom model" means here
 
 This is a per-scene reconstruction model, not a newly trained general-purpose neural foundation model:
