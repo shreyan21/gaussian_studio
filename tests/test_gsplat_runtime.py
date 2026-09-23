@@ -59,7 +59,7 @@ def test_subject_crop_follows_projected_focus_and_stays_in_frame():
     K = np.array([[100, 0, 100], [0, 100, 50], [0, 0, 1]], np.float32)
     viewmat = np.eye(4, dtype=np.float32)
     bounds = _subject_crop_bounds(200, 100, K, viewmat, np.array([1.5, 0, 3]))
-    assert bounds == (56, 14, 200, 86)
+    assert bounds == (36, 9, 200, 91)
 
 
 def test_export_removes_oversized_streak_splats():
@@ -77,3 +77,20 @@ def test_export_removes_oversized_streak_splats():
     gaussians, _ = _export_arrays(splats, None, scene_scale=1.0, export_stats=stats)
     assert len(gaussians) == count - 1
     assert stats["export_removed_gaussians"] == 1
+
+
+def test_export_removes_highly_anisotropic_shards():
+    count = 2_001
+    scales = torch.full((count, 3), -4.0)
+    scales[-1] = torch.log(torch.tensor([0.05, 0.0001, 0.05]))
+    splats = {
+        "means": torch.zeros((count, 3)),
+        "scales": scales,
+        "quats": torch.tensor([[1.0, 0.0, 0.0, 0.0]]).repeat(count, 1),
+        "opacities": torch.full((count,), 2.0),
+        "colors": torch.zeros((count, 3)),
+    }
+    stats = {}
+    gaussians, _ = _export_arrays(splats, None, scene_scale=1.0, export_stats=stats)
+    assert len(gaussians) == count - 1
+    assert stats["export_anisotropy_limit"] == 20.0

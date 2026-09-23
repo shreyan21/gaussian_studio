@@ -69,7 +69,7 @@ The video path extracts 32, 40, or 48 sharp evenly spaced frames for Quick, Bala
 
 The pipeline rejects captures when fewer than eight cameras register, less than 55% of the inputs align, or the sparse model has fewer than 500 points. This is intentional: the viewer should not present disconnected noise as a successful 3D scene.
 
-For a flower or single object, leave **Focus central subject** enabled. The app triangulates the subject from recovered camera rays, follows its projected position in every training view, excludes distant background seeds before optimization, and filters oversized streak splats during export. Disable it only when the surrounding environment is intentionally part of the scene.
+For a flower or single object, leave **Focus central subject** enabled. The app triangulates the subject from recovered camera rays, follows its projected position in every training view, keeps the complete COLMAP seed geometry for stable optimization, then filters distant, oversized, low-opacity, and excessively elongated splats during export. The viewer also limits rotation to the useful captured range. Disable focus only when the surrounding environment is intentionally part of the scene.
 
 ## RTX A1000 8 GB settings
 

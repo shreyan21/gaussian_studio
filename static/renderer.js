@@ -20,7 +20,7 @@ void main(){
  int base=int(index)*4;
  vec4 pos=getData(base), scale=getData(base+1), q=getData(base+2), col=getData(base+3);
  vec4 cam=view*vec4(pos.xyz,1.0);
- local=corner*3.0; rgba=vec4(col.rgb,pos.w);
+ local=corner*2.5; rgba=vec4(col.rgb,pos.w);
  if(cam.z>=-0.01){gl_Position=vec4(2.0,2.0,2.0,1.0);rgba.a=0.0;return;}
  float w=q.x,x=q.y,y=q.z,z=q.w;
  mat3 r=mat3(1.0-2.0*(y*y+z*z),2.0*(x*y+w*z),2.0*(x*z-w*y),
@@ -35,7 +35,8 @@ void main(){
  float mid=0.5*(a+c), disc=length(vec2(0.5*(a-c),b));
  float l1=max(mid+disc,0.1),l2=max(mid-disc,0.1);
  vec2 dir=abs(b)>0.00001?normalize(vec2(b,l1-a)):(a>=c?vec2(1,0):vec2(0,1));
- vec2 axis1=dir*min(sqrt(l1),700.0),axis2=vec2(-dir.y,dir.x)*min(sqrt(l2),700.0);
+ float axisLimit=max(viewport.x,viewport.y)*0.05;
+ vec2 axis1=dir*min(sqrt(l1),axisLimit),axis2=vec2(-dir.y,dir.x)*min(sqrt(l2),axisLimit);
  vec4 clip=projection*cam;
  clip.xy+=(axis1*local.x+axis2*local.y)*2.0/viewport*clip.w;
  gl_Position=clip;

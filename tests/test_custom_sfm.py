@@ -2,7 +2,7 @@ import numpy as np
 from PIL import Image
 from plyfile import PlyData, PlyElement
 
-from studio.custom_sfm import _focus_from_camera_rays, _gpu_indices, _limit_patch_match_sources, _patch_match_profile, _prepare_images, _run_fusion_recovery, _validate_registration, dense_cloud_to_gaussians, extract_video_frames, find_colmap
+from studio.custom_sfm import _focus_from_camera_rays, _gpu_indices, _limit_patch_match_sources, _patch_match_profile, _prepare_images, _pycolmap_camera_focus, _run_fusion_recovery, _validate_registration, dense_cloud_to_gaussians, extract_video_frames, find_colmap
 
 
 def test_prepare_images_makes_ordered_equal_square_frames(tmp_path):
@@ -87,6 +87,33 @@ def test_camera_rays_recover_central_subject():
     focus = _focus_from_camera_rays(centers, directions)
     np.testing.assert_allclose(focus["target"], target, atol=1e-6)
     np.testing.assert_allclose(focus["source_camera"], centers[0])
+
+
+def test_pycolmap_focus_uses_first_ordered_capture_as_front_camera():
+    target = np.array([0.0, 0.0, -3.0])
+
+    class FakeImage:
+        has_pose = True
+
+        def __init__(self, name, center):
+            self.name = name
+            self._center = np.asarray(center, dtype=float)
+
+        def projection_center(self):
+            return self._center
+
+        def viewing_direction(self):
+            return target - self._center
+
+    reconstruction = type("Reconstruction", (), {
+        "images": {
+            2: FakeImage("0002.jpg", [0, 1, 0]),
+            0: FakeImage("0000.jpg", [-1, 0, 0]),
+            1: FakeImage("0001.jpg", [1, 0, 0]),
+        }
+    })()
+    focus = _pycolmap_camera_focus(reconstruction)
+    np.testing.assert_allclose(focus["source_camera"], [-1, 0, 0])
 
 
 def test_dense_cloud_becomes_valid_oriented_gaussians(tmp_path):

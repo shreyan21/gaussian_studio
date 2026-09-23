@@ -26,7 +26,8 @@ TRAINING_PROFILES = {
     1600: {"image_side": 900, "steps": 9_000, "max_splats": 750_000},
     2000: {"image_side": 1080, "steps": 12_000, "max_splats": 1_000_000},
 }
-SUBJECT_CROP_RATIO = 0.72
+SUBJECT_CROP_RATIO = 0.82
+MAX_TRAINING_SCALE_RATIO = 20.0
 
 
 def gsplat_ready() -> bool:
@@ -144,13 +145,16 @@ def _load_training_views(workspace: Path, image_side: int, focus: dict | None):
     if len(xyz) < 500:
         raise RuntimeError(f"COLMAP produced only {len(xyz):,} usable sparse seeds for 3DGS training.")
     seed_points_before_focus = len(xyz)
-    seed_focus_applied = False
+    focus_seed_candidates = 0
     if focus is not None:
         target = np.asarray(focus["target"], np.float32)
         focused = np.linalg.norm(xyz - target, axis=1) <= float(focus["camera_distance"] * 0.65)
-        if np.count_nonzero(focused) >= 500:
-            xyz, colors = xyz[focused], colors[focused]
-            seed_focus_applied = True
+        focus_seed_candidates = int(np.count_nonzero(focused))
+        # Do not discard the other registered COLMAP points before optimization.
+        # Sparse foregrounds (flowers, foliage, fur) otherwise start from only a
+        # few hundred Gaussians, which expand into long translucent sheets.  The
+        # projected image crop focuses the loss and export performs the final
+        # spatial subject filter after the geometry has converged.
 
     centers = np.asarray([image.projection_center() for image in registered], dtype=np.float32)
     scene_center = np.mean(centers, axis=0)
@@ -158,7 +162,8 @@ def _load_training_views(workspace: Path, image_side: int, focus: dict | None):
     return views, xyz, colors, scene_scale, {
         "training_subject_crop_ratio": SUBJECT_CROP_RATIO if focus is not None else 1.0,
         "seed_points_before_focus": seed_points_before_focus,
-        "seed_focus_applied": seed_focus_applied,
+        "focus_seed_candidates": focus_seed_candidates,
+        "seed_focus_applied": False,
     }
 
 
@@ -187,6 +192,8 @@ def _initial_parameters(xyz: np.ndarray, colors: np.ndarray, scene_scale: float,
     local = np.mean(np.square(distances[:, 1:]), axis=1)
     fallback = max(float(np.median(local[local > 0])) if np.any(local > 0) else scene_scale * 1e-4, 1e-8)
     local = np.sqrt(np.maximum(local, fallback)).astype(np.float32)
+    typical = float(np.median(local[np.isfinite(local) & (local > 0)]))
+    local = np.minimum(local, max(typical * 4.0, 1e-7))
     tensors = {
         "means": torch.from_numpy(xyz),
         "scales": torch.from_numpy(np.log(local)[:, None].repeat(3, axis=1)),
@@ -242,19 +249,19 @@ def _export_arrays(
         & np.isfinite(opacities)
         & np.isfinite(colors).all(axis=1)
     )
-    keep = finite & (opacities >= 0.03) & (scales > 0).all(axis=1)
+    keep = finite & (opacities >= 0.05) & (scales > 0).all(axis=1)
     scale_limit = None
     maximum_scale = np.max(scales, axis=1)
     minimum_scale = np.min(scales, axis=1)
     valid_scales = maximum_scale[keep]
     if len(valid_scales):
-        robust_limit = max(
-            float(np.median(valid_scales) * 12.0),
-            float(np.percentile(valid_scales, 99.0)),
+        robust_limit = min(
+            float(np.median(valid_scales) * 4.0),
+            float(np.percentile(valid_scales, 98.5)),
         )
-        scale_limit = robust_limit if scene_scale is None else min(robust_limit, scene_scale * 0.08)
+        scale_limit = robust_limit if scene_scale is None else min(robust_limit, scene_scale * 0.04)
         keep &= maximum_scale <= scale_limit
-        keep &= maximum_scale / np.maximum(minimum_scale, 1e-8) <= 50.0
+        keep &= maximum_scale / np.maximum(minimum_scale, 1e-8) <= MAX_TRAINING_SCALE_RATIO
     focus_applied = False
     if focus is not None:
         target = np.asarray(focus["target"], dtype=np.float32)
@@ -284,6 +291,8 @@ def _export_arrays(
             "exported_gaussians": len(gaussians),
             "export_removed_gaussians": input_gaussians - len(gaussians),
             "export_scale_limit": round(float(scale_limit), 7) if scale_limit is not None else None,
+            "export_opacity_minimum": 0.05,
+            "export_anisotropy_limit": MAX_TRAINING_SCALE_RATIO,
         })
     return gaussians, focus_applied
 
@@ -328,10 +337,16 @@ def train_gaussian_scene(
     splats, optimizers = _initial_parameters(xyz, seed_colors, scene_scale, device)
     steps = profile["steps"]
     strategy = DefaultStrategy(
-        refine_start_iter=min(300, max(100, steps // 10)),
+        grow_scale3d=0.006,
+        grow_scale2d=0.03,
+        prune_scale3d=0.035,
+        prune_scale2d=0.10,
+        refine_scale2d_stop_iter=max(1_000, int(steps * 0.75)),
+        refine_start_iter=min(500, max(150, steps // 10)),
         refine_stop_iter=max(500, int(steps * 0.9)),
         reset_every=min(3_000, max(1_200, steps // 2)),
         refine_every=100,
+        pause_refine_after_reset=len(views) + 100,
         verbose=False,
     )
     strategy.check_sanity(splats, optimizers)
@@ -364,7 +379,9 @@ def train_gaussian_scene(
         )
         strategy.step_pre_backward(splats, optimizers, state, step, info)
         l1 = F.l1_loss(rendered, pixels)
-        loss = 0.8 * l1 + 0.2 * (1.0 - _ssim(rendered, pixels))
+        log_scale_span = splats["scales"].amax(dim=1) - splats["scales"].amin(dim=1)
+        anisotropy_penalty = torch.relu(log_scale_span - math.log(MAX_TRAINING_SCALE_RATIO)).mean()
+        loss = 0.8 * l1 + 0.2 * (1.0 - _ssim(rendered, pixels)) + 0.002 * anisotropy_penalty
         loss.backward()
         for optimizer in optimizers.values():
             optimizer.step()
@@ -399,7 +416,7 @@ def train_gaussian_scene(
         "trained_gaussians": len(gaussians),
         "training_image_side": profile["image_side"],
         "training_splat_budget": profile["max_splats"],
-        "recommended_splat_scale": 0.85,
+        "recommended_splat_scale": 0.55,
         "subject_focus_requested": focus_subject,
         "subject_focus_applied": focus_applied,
         **load_stats,

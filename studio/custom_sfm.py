@@ -403,7 +403,10 @@ def _cli_camera_focus(work: Path) -> dict | None:
 
 
 def _pycolmap_camera_focus(reconstruction) -> dict | None:
-    images = [image for image in reconstruction.images.values() if image.has_pose]
+    images = sorted(
+        (image for image in reconstruction.images.values() if image.has_pose),
+        key=lambda image: image.name,
+    )
     return _focus_from_camera_rays(
         [image.projection_center() for image in images],
         [image.viewing_direction() for image in images],
@@ -840,6 +843,7 @@ def reconstruct(
         "dense_points": dense_points,
         "dense_file": "dense.ply",
         "source_camera": source_camera,
+        "view_limits": {"yaw_degrees": 70, "pitch_degrees": 40} if trained and focus_subject else None,
         **focus_stats,
         **quality,
         "pretrained_weights": False,
