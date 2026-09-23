@@ -26,8 +26,9 @@ TRAINING_PROFILES = {
     1600: {"image_side": 900, "steps": 9_000, "max_splats": 750_000},
     2000: {"image_side": 1080, "steps": 12_000, "max_splats": 1_000_000},
 }
-SUBJECT_CROP_RATIO = 0.82
-MAX_TRAINING_SCALE_RATIO = 20.0
+SUBJECT_CROP_RATIO = 0.74
+MAX_TRAINING_SCALE_RATIO = 8.0
+ANISOTROPY_PENALTY_START_RATIO = 6.0
 
 
 def gsplat_ready() -> bool:
@@ -159,8 +160,12 @@ def _load_training_views(workspace: Path, image_side: int, focus: dict | None):
     centers = np.asarray([image.projection_center() for image in registered], dtype=np.float32)
     scene_center = np.mean(centers, axis=0)
     scene_scale = max(float(np.linalg.norm(centers - scene_center, axis=1).max()), 1e-3)
+    front_height, front_width = views[0]["pixels"].shape[:2]
+    front_fov_y = math.degrees(2.0 * math.atan(front_height / (2.0 * float(views[0]["K"][1, 1]))))
     return views, xyz, colors, scene_scale, {
         "training_subject_crop_ratio": SUBJECT_CROP_RATIO if focus is not None else 1.0,
+        "fov_y": round(front_fov_y, 4),
+        "image_size": [front_width, front_height],
         "seed_points_before_focus": seed_points_before_focus,
         "focus_seed_candidates": focus_seed_candidates,
         "seed_focus_applied": False,
@@ -182,6 +187,20 @@ def _ssim(prediction, target):
         (mu_x.square() + mu_y.square() + c1) * (sigma_x + sigma_y + c2)
     )
     return score.mean()
+
+
+def _clamp_log_scale_anisotropy_(log_scales, maximum_ratio: float = MAX_TRAINING_SCALE_RATIO) -> None:
+    """Bound every Gaussian axis ratio while preserving its overall footprint."""
+    import torch
+
+    if maximum_ratio <= 1:
+        raise ValueError("maximum_ratio must be greater than one")
+    with torch.no_grad():
+        lower = log_scales.amin(dim=1, keepdim=True)
+        upper = log_scales.amax(dim=1, keepdim=True)
+        midpoint = (lower + upper) * 0.5
+        half_span = 0.5 * math.log(maximum_ratio)
+        log_scales.clamp_(min=midpoint - half_span, max=midpoint + half_span)
 
 
 def _initial_parameters(xyz: np.ndarray, colors: np.ndarray, scene_scale: float, device: str):
@@ -375,19 +394,23 @@ def train_gaussian_scene(
             height=height,
             packed=True,
             absgrad=strategy.absgrad,
-            rasterize_mode="antialiased",
+            rasterize_mode="classic",
         )
         strategy.step_pre_backward(splats, optimizers, state, step, info)
         l1 = F.l1_loss(rendered, pixels)
         log_scale_span = splats["scales"].amax(dim=1) - splats["scales"].amin(dim=1)
-        anisotropy_penalty = torch.relu(log_scale_span - math.log(MAX_TRAINING_SCALE_RATIO)).mean()
-        loss = 0.8 * l1 + 0.2 * (1.0 - _ssim(rendered, pixels)) + 0.002 * anisotropy_penalty
+        anisotropy_penalty = torch.relu(
+            log_scale_span - math.log(ANISOTROPY_PENALTY_START_RATIO)
+        ).mean()
+        loss = 0.8 * l1 + 0.2 * (1.0 - _ssim(rendered, pixels)) + 0.01 * anisotropy_penalty
         loss.backward()
         for optimizer in optimizers.values():
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
+        _clamp_log_scale_anisotropy_(splats["scales"])
         scheduler.step()
         strategy.step_post_backward(splats, optimizers, state, step, info, packed=True)
+        _clamp_log_scale_anisotropy_(splats["scales"])
         if not splat_budget_reached and len(splats["means"]) >= profile["max_splats"]:
             strategy.refine_stop_iter = step
             splat_budget_reached = True

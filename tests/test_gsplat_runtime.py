@@ -3,6 +3,7 @@ import pytest
 from plyfile import PlyData
 
 from studio.gsplat_runtime import (
+    _clamp_log_scale_anisotropy_,
     _export_arrays,
     _subject_crop_bounds,
     _training_profile,
@@ -59,7 +60,17 @@ def test_subject_crop_follows_projected_focus_and_stays_in_frame():
     K = np.array([[100, 0, 100], [0, 100, 50], [0, 0, 1]], np.float32)
     viewmat = np.eye(4, dtype=np.float32)
     bounds = _subject_crop_bounds(200, 100, K, viewmat, np.array([1.5, 0, 3]))
-    assert bounds == (36, 9, 200, 91)
+    assert bounds == (52, 13, 200, 87)
+
+
+def test_training_clamps_anisotropy_without_changing_geometric_midpoint():
+    scales = torch.log(torch.tensor([[0.001, 0.02, 0.2], [0.02, 0.02, 0.02]]))
+    midpoints_before = (scales.amin(dim=1) + scales.amax(dim=1)) * 0.5
+    _clamp_log_scale_anisotropy_(scales)
+    ratios = torch.exp(scales.amax(dim=1) - scales.amin(dim=1))
+    midpoints_after = (scales.amin(dim=1) + scales.amax(dim=1)) * 0.5
+    assert torch.all(ratios <= 8.00001)
+    torch.testing.assert_close(midpoints_after, midpoints_before)
 
 
 def test_export_removes_oversized_streak_splats():
@@ -93,4 +104,4 @@ def test_export_removes_highly_anisotropic_shards():
     stats = {}
     gaussians, _ = _export_arrays(splats, None, scene_scale=1.0, export_stats=stats)
     assert len(gaussians) == count - 1
-    assert stats["export_anisotropy_limit"] == 20.0
+    assert stats["export_anisotropy_limit"] == 8.0

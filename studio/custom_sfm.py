@@ -832,6 +832,7 @@ def reconstruct(
         shutil.copy2(fused, directory / "dense.ply")
     viewer_flip = np.array([1, -1, -1], dtype=np.float64)
     source_camera = (np.asarray(focus["source_camera"]) * viewer_flip).tolist() if focus else [0, 0, 0]
+    view_target = (np.asarray(focus["target"]) * viewer_flip).tolist() if focus else None
     return gaussians, {
         "fov_y": 50.0,
         "image_size": [max_side, max_side],
@@ -843,6 +844,7 @@ def reconstruct(
         "dense_points": dense_points,
         "dense_file": "dense.ply",
         "source_camera": source_camera,
+        "view_target": view_target,
         "view_limits": {"yaw_degrees": 70, "pitch_degrees": 40} if trained and focus_subject else None,
         **focus_stats,
         **quality,
