@@ -30,7 +30,7 @@ def test_home_and_procedural_viewer_without_external_engine(client):
     assert client.get("/static/renderer.js").status_code == 200
     health = client.get("/api/health").json()
     assert health["app"] == "Gaussian Scene Studio"
-    assert health["version"] == "3.1.0"
+    assert health["version"] == "3.2.0"
     assert health["max_images"] == 80
     assert set(health["engines"]) == {"custom"}
     assert client.get("/api/demo/scene.gsb").content[:4] == b"GSS1"
@@ -101,12 +101,13 @@ def test_custom_requires_twelve_views(client):
 def test_custom_accepts_video_as_single_source(client, monkeypatch, tmp_path):
     monkeypatch.setattr(Jobs, "run", lambda *args: None)
     payload = b"\x00\x00\x00\x18ftypmp42" + b"0" * 2048
-    response = client.post("/api/jobs", files={"images": ("walk.mp4", payload, "video/mp4")})
+    response = client.post("/api/jobs", files={"images": ("walk.mp4", payload, "video/mp4")}, data={"focus_subject": "false"})
     assert response.status_code == 202
     folder = tmp_path / "jobs" / response.json()["id"]
     request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
     assert request["video"]["file"] == "input-video.mp4"
     assert request["inputs"] == []
+    assert request["focus_subject"] is False
     assert (folder / "input-video.mp4").read_bytes() == payload
 
 

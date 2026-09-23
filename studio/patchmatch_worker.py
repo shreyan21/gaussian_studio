@@ -4,13 +4,13 @@ from pathlib import Path
 
 
 def main() -> int:
-    if len(sys.argv) != 6:
-        raise SystemExit("usage: patchmatch_worker WORKSPACE MAX_SIDE ITERATIONS SAMPLES CACHE_GB")
+    if len(sys.argv) != 7:
+        raise SystemExit("usage: patchmatch_worker WORKSPACE MAX_SIDE ITERATIONS SAMPLES CACHE_GB GPU_INDEX")
     import pycolmap
 
     workspace = Path(sys.argv[1]).resolve()
     options = pycolmap.PatchMatchOptions()
-    options.gpu_index = "0"
+    options.gpu_index = sys.argv[6]
     options.max_image_size = int(sys.argv[2])
     options.num_iterations = int(sys.argv[3])
     options.num_samples = int(sys.argv[4])

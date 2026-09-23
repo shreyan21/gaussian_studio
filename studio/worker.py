@@ -46,6 +46,7 @@ def main():
             options["resolution"],
             options["device"] != "cpu",
             lambda percent, message: progress(directory, percent, message),
+            options.get("focus_subject", True),
         )
         meta["source_type"] = source_type
         meta["uploaded_count"] = 1 if video else len(paths)

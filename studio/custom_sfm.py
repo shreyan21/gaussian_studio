@@ -84,6 +84,26 @@ def _patch_match_profile(max_side: int) -> dict:
     return PATCH_MATCH_PROFILES[max_side]
 
 
+def _gpu_indices() -> str:
+    configured = os.environ.get("GSS_GPU_INDEX", "").strip()
+    if configured:
+        return configured
+    try:
+        probe = subprocess.run(
+            ["nvidia-smi", "-L"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        count = len([line for line in probe.stdout.splitlines() if line.strip().lower().startswith("gpu ")])
+        if probe.returncode == 0 and count:
+            return ",".join(str(index) for index in range(count))
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return "0"
+
+
 def _limit_patch_match_sources(workspace: Path, maximum: int) -> int:
     """Bound automatically selected source views per reference image."""
     config = workspace / "stereo" / "patch-match.cfg"
@@ -227,6 +247,58 @@ def _validate_registration(registered: int, total: int, sparse_points: int) -> d
     return {"registered_images": registered, "registration_ratio": round(ratio, 4), "sparse_points": sparse_points}
 
 
+def _focus_from_camera_rays(centers, directions) -> dict | None:
+    centers = np.asarray(centers, dtype=np.float64)
+    directions = np.asarray(directions, dtype=np.float64)
+    if centers.shape != directions.shape or centers.ndim != 2 or centers.shape[0] < 3 or centers.shape[1] != 3:
+        return None
+    lengths = np.linalg.norm(directions, axis=1, keepdims=True)
+    good = np.isfinite(centers).all(axis=1) & np.isfinite(directions).all(axis=1) & (lengths[:, 0] > 1e-8)
+    centers, directions = centers[good], directions[good] / lengths[good]
+    if len(centers) < 3:
+        return None
+    projectors = np.eye(3)[None, :, :] - directions[:, :, None] * directions[:, None, :]
+    system = projectors.sum(axis=0)
+    if not np.isfinite(system).all() or np.linalg.cond(system) > 1e5:
+        return None
+    target = np.linalg.solve(system, np.einsum("nij,nj->i", projectors, centers))
+    camera_distance = float(np.median(np.linalg.norm(centers - target, axis=1)))
+    if not np.isfinite(target).all() or not np.isfinite(camera_distance) or camera_distance <= 0:
+        return None
+    return {"target": target, "camera_distance": camera_distance, "source_camera": centers[0]}
+
+
+def _rotation_from_qvec(qvec) -> np.ndarray:
+    w, x, y, z = np.asarray(qvec, dtype=np.float64)
+    return np.array([
+        [1 - 2 * (y*y + z*z), 2 * (x*y - z*w), 2 * (x*z + y*w)],
+        [2 * (x*y + z*w), 1 - 2 * (x*x + z*z), 2 * (y*z - x*w)],
+        [2 * (x*z - y*w), 2 * (y*z + x*w), 1 - 2 * (x*x + y*y)],
+    ])
+
+
+def _cli_camera_focus(work: Path) -> dict | None:
+    text = (work / "model-statistics" / "images.txt").read_text(encoding="utf-8")
+    centers, directions = [], []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 10 or not fields[9].lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+            continue
+        rotation = _rotation_from_qvec([float(value) for value in fields[1:5]])
+        translation = np.array([float(value) for value in fields[5:8]])
+        centers.append(-rotation.T @ translation)
+        directions.append(rotation.T @ np.array([0.0, 0.0, 1.0]))
+    return _focus_from_camera_rays(centers, directions)
+
+
+def _pycolmap_camera_focus(reconstruction) -> dict | None:
+    images = [image for image in reconstruction.images.values() if image.has_pose]
+    return _focus_from_camera_rays(
+        [image.projection_center() for image in images],
+        [image.viewing_direction() for image in images],
+    )
+
+
 def _reconstruct_cli(
     executable: Path,
     images: Path,
@@ -234,7 +306,7 @@ def _reconstruct_cli(
     max_side: int,
     use_gpu: bool,
     progress: Progress,
-) -> tuple[Path, str, dict]:
+) -> tuple[Path, str, dict, dict | None]:
     database, sparse, dense = work / "database.db", work / "sparse", work / "dense"
     sparse.mkdir(parents=True, exist_ok=True)
     gpu = "1" if use_gpu else "0"
@@ -271,6 +343,7 @@ def _reconstruct_cli(
     model = _largest_model(sparse)
     registered, sparse_points = _cli_model_stats(executable, model, work)
     quality = _validate_registration(registered, len(list(images.glob("*.jpg"))), sparse_points)
+    focus = _cli_camera_focus(work)
     progress(55, "Undistorting registered photographs")
     _run(
         executable,
@@ -284,6 +357,7 @@ def _reconstruct_cli(
     if not use_gpu:
         raise RuntimeError("Dense custom reconstruction requires NVIDIA CUDA. Select NVIDIA CUDA and retry.")
     profile = _patch_match_profile(max_side)
+    dense_gpu_index = _gpu_indices()
     _limit_patch_match_sources(dense, profile["max_sources"])
     progress(64, f"Starting dense CUDA stereo ({profile['iterations']} iterations)")
     _run_dense_process(
@@ -291,7 +365,7 @@ def _reconstruct_cli(
         "patch_match_stereo",
         "--workspace_path", str(dense),
         "--workspace_format", "COLMAP",
-        "--PatchMatchStereo.gpu_index", "0",
+        "--PatchMatchStereo.gpu_index", dense_gpu_index,
         "--PatchMatchStereo.max_image_size", str(max_side),
         "--PatchMatchStereo.num_iterations", str(profile["iterations"]),
         "--PatchMatchStereo.num_samples", str(profile["samples"]),
@@ -313,7 +387,7 @@ def _reconstruct_cli(
     )
     if not fused.is_file():
         raise RuntimeError("Dense fusion completed without a point cloud. Capture more overlapping, textured views.")
-    return fused, "COLMAP 4.2 CUDA command-line", quality
+    return fused, "COLMAP 4.2 CUDA command-line", quality, focus
 
 
 def _reconstruct_pycolmap(
@@ -322,7 +396,7 @@ def _reconstruct_pycolmap(
     max_side: int,
     use_gpu: bool,
     progress: Progress,
-) -> tuple[Path, str, dict]:
+) -> tuple[Path, str, dict, dict | None]:
     import pycolmap
 
     if not use_gpu or not getattr(pycolmap, "has_cuda", False):
@@ -352,6 +426,7 @@ def _reconstruct_pycolmap(
         raise RuntimeError("Camera alignment failed. Capture a slow video or 20-40 ordered photos with 70-85% overlap.")
     reconstruction = max(maps.values(), key=lambda item: item.num_reg_images())
     quality = _validate_registration(reconstruction.num_reg_images(), len(list(images.glob("*.jpg"))), reconstruction.num_points3D())
+    focus = _pycolmap_camera_focus(reconstruction)
     model = sparse / "best"
     model.mkdir(exist_ok=True)
     reconstruction.write(model)
@@ -365,6 +440,7 @@ def _reconstruct_pycolmap(
         undistort_options=undistort_options,
     )
     profile = _patch_match_profile(max_side)
+    dense_gpu_index = _gpu_indices()
     _limit_patch_match_sources(dense, profile["max_sources"])
     progress(64, f"Starting dense CUDA stereo ({profile['iterations']} iterations)")
     _run_dense_process(
@@ -377,6 +453,7 @@ def _reconstruct_pycolmap(
             str(profile["iterations"]),
             str(profile["samples"]),
             str(profile["cache_gb"]),
+            dense_gpu_index,
         ],
         progress,
     )
@@ -393,7 +470,7 @@ def _reconstruct_pycolmap(
     )
     if not fused.is_file():
         raise RuntimeError("Dense fusion completed without a point cloud. Capture more overlapping, textured views.")
-    return fused, f"PyCOLMAP {pycolmap.__version__} CUDA", quality
+    return fused, f"PyCOLMAP {pycolmap.__version__} CUDA", quality, focus
 
 
 def _field(vertex, *names: str, default=None):
@@ -406,7 +483,55 @@ def _field(vertex, *names: str, default=None):
     raise ValueError(f"Dense point cloud is missing fields: {', '.join(names)}")
 
 
-def dense_cloud_to_gaussians(path: Path, max_gaussians: int = 1_250_000) -> np.ndarray:
+def _remove_small_components(xyz, normals, colors, local, spacing: float):
+    """Discard disconnected voxel islands while preserving substantial surfaces."""
+    keys = np.floor((xyz - xyz.min(axis=0)) / max(spacing * 4, 1e-6)).astype(np.int64)
+    voxels, inverse, counts = np.unique(keys, axis=0, return_inverse=True, return_counts=True)
+    if len(voxels) < 2:
+        return xyz, normals, colors, local, 0
+    lookup = {tuple(key): index for index, key in enumerate(voxels)}
+    parent = np.arange(len(voxels))
+
+    def root(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left, right):
+        left, right = root(left), root(right)
+        if left != right:
+            parent[right] = left
+
+    offsets = [
+        (dx, dy, dz)
+        for dx in (-1, 0, 1)
+        for dy in (-1, 0, 1)
+        for dz in (-1, 0, 1)
+        if (dx, dy, dz) > (0, 0, 0)
+    ]
+    for index, key in enumerate(voxels):
+        base = tuple(key)
+        for offset in offsets:
+            neighbor = lookup.get(tuple(base[axis] + offset[axis] for axis in range(3)))
+            if neighbor is not None:
+                union(index, neighbor)
+    roots = np.array([root(index) for index in range(len(voxels))])
+    component_sizes = np.bincount(roots, weights=counts, minlength=len(voxels))
+    minimum = max(100, int(component_sizes.max(initial=0) * 0.02))
+    keep = component_sizes[roots[inverse]] >= minimum
+    if keep.sum() < 10_000:
+        return xyz, normals, colors, local, 0
+    removed = int(len(xyz) - keep.sum())
+    return xyz[keep], normals[keep], colors[keep], local[keep], removed
+
+
+def dense_cloud_to_gaussians(
+    path: Path,
+    max_gaussians: int = 1_250_000,
+    focus: dict | None = None,
+    focus_stats: dict | None = None,
+) -> np.ndarray:
     vertex = PlyData.read(str(path))["vertex"]
     total = len(vertex)
     if total < 10_000:
@@ -433,6 +558,17 @@ def dense_cloud_to_gaussians(path: Path, max_gaussians: int = 1_250_000) -> np.n
     # +Y up and -Z forward. Keep the first reconstructed camera near the origin.
     xyz *= np.array([1, -1, -1], dtype=np.float32)
     normals *= np.array([1, -1, -1], dtype=np.float32)
+    focus_applied = False
+    focus_radius = None
+    if focus is not None:
+        focus_target = np.asarray(focus["target"], dtype=np.float32) * np.array([1, -1, -1], dtype=np.float32)
+        focus_radius = float(focus["camera_distance"] * 0.42)
+        subject_distance = np.linalg.norm(xyz - focus_target, axis=1)
+        subject_keep = subject_distance <= focus_radius
+        minimum = max(10_000, int(len(xyz) * 0.05))
+        if subject_keep.sum() >= minimum:
+            xyz, normals, colors = xyz[subject_keep], normals[subject_keep], colors[subject_keep]
+            focus_applied = True
     center = np.median(xyz, axis=0)
     radius = np.linalg.norm(xyz - center, axis=1)
     xyz, normals, colors = (array[radius <= np.percentile(radius, 99.5)] for array in (xyz, normals, colors))
@@ -448,6 +584,19 @@ def dense_cloud_to_gaussians(path: Path, max_gaussians: int = 1_250_000) -> np.n
     median_spacing = float(np.median(positive))
     keep = np.isfinite(local) & (local > 0) & (local < median_spacing * 8)
     xyz, normals, colors, local = xyz[keep], normals[keep], colors[keep], local[keep]
+    removed_components = 0
+    if focus_applied and len(xyz) <= 400_000:
+        xyz, normals, colors, local, removed_components = _remove_small_components(
+            xyz, normals, colors, local, median_spacing
+        )
+    if focus_stats is not None:
+        focus_stats.update({
+            "subject_focus_requested": focus is not None,
+            "subject_focus_applied": focus_applied,
+            "subject_focus_radius": focus_radius,
+            "removed_fragment_points": removed_components,
+            "focused_points": int(len(xyz)),
+        })
 
     normal_length = np.linalg.norm(normals, axis=1, keepdims=True)
     normals = np.where(normal_length > 1e-6, normals / np.maximum(normal_length, 1e-6), np.array([0, 0, 1]))
@@ -473,6 +622,7 @@ def reconstruct(
     resolution: int,
     use_gpu: bool,
     progress: Progress,
+    focus_subject: bool = True,
 ) -> tuple[np.ndarray, dict]:
     if len(input_paths) < MIN_IMAGES:
         raise RuntimeError(f"Custom reconstruction needs at least {MIN_IMAGES} overlapping views; 20-60 are recommended.")
@@ -483,13 +633,20 @@ def reconstruct(
     _prepare_images(input_paths, images, max_side)
     executable = find_colmap()
     if executable is not None:
-        fused, backend, quality = _reconstruct_cli(executable, images, work, max_side, use_gpu, progress)
+        fused, backend, quality, focus = _reconstruct_cli(executable, images, work, max_side, use_gpu, progress)
     else:
-        fused, backend, quality = _reconstruct_pycolmap(images, work, max_side, use_gpu, progress)
-    progress(88, "Building adaptive oriented Gaussians")
+        fused, backend, quality, focus = _reconstruct_pycolmap(images, work, max_side, use_gpu, progress)
+    progress(88, "Filtering background fragments and building Gaussians" if focus_subject else "Building adaptive oriented Gaussians")
     dense_points = len(PlyData.read(str(fused))["vertex"])
-    gaussians = dense_cloud_to_gaussians(fused)
+    focus_stats = {}
+    gaussians = dense_cloud_to_gaussians(
+        fused,
+        focus=focus if focus_subject else None,
+        focus_stats=focus_stats,
+    )
     shutil.copy2(fused, directory / "dense.ply")
+    viewer_flip = np.array([1, -1, -1], dtype=np.float64)
+    source_camera = (np.asarray(focus["source_camera"]) * viewer_flip).tolist() if focus else [0, 0, 0]
     return gaussians, {
         "fov_y": 50.0,
         "image_size": [max_side, max_side],
@@ -500,8 +657,10 @@ def reconstruct(
         "input_count": len(input_paths),
         "dense_points": dense_points,
         "dense_file": "dense.ply",
+        "source_camera": source_camera,
+        **focus_stats,
         **quality,
         "pretrained_weights": False,
         "licence": "Application MIT; COLMAP BSD-3-Clause. See docs/MODEL-LICENSES.md.",
-        "limitation": "Measured per-scene reconstruction from registered views. Unseen, reflective, transparent, moving, textureless, or poorly matched regions remain incomplete; dense.ply is the raw COLMAP cloud.",
+        "limitation": "Measured per-scene reconstruction from registered views. Central-subject focus removes distant fragments but cannot recover unseen or moving petals; dense.ply retains the uncropped COLMAP cloud.",
     }

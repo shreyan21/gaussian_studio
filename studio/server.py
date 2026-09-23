@@ -283,7 +283,7 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        return {"app": "Gaussian Scene Studio", "version": "3.1.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": MAX_VIDEO_UPLOAD // 1024**2, "remote_access": bool(access_token)}
+        return {"app": "Gaussian Scene Studio", "version": "3.2.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": MAX_VIDEO_UPLOAD // 1024**2, "remote_access": bool(access_token)}
 
     @app.post("/api/jobs", status_code=202)
     async def upload(
@@ -294,6 +294,7 @@ def create_app(data_dir=None):
         resolution: int = Form(512),
         depth_strength: float = Form(1.0),
         view_limit: str = Form("auto"),
+        focus_subject: bool = Form(True),
     ):
         if engine != "custom" or device not in ("auto", "cpu", "cuda"):
             raise HTTPException(422, "Invalid model or device")
@@ -324,7 +325,7 @@ def create_app(data_dir=None):
                 raise HTTPException(413, f"Video must be under {MAX_VIDEO_UPLOAD // 1024**2} MB")
             if size < 1024:
                 raise HTTPException(415, "The uploaded video is empty or invalid")
-            options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": [], "video": {"file": "input-video" + suffix, "original_name": Path(upload_file.filename or "video").name[:100]}, "view_limit": view_limit}
+            options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": [], "video": {"file": "input-video" + suffix, "original_name": Path(upload_file.filename or "video").name[:100]}, "view_limit": view_limit, "focus_subject": focus_subject}
             try:
                 return app.state.jobs.create([], [upload_file.filename or "video"], options, video_stream=upload_file.file)
             finally:
@@ -364,7 +365,7 @@ def create_app(data_dir=None):
             {"file": "input.png" if i == 0 else f"input_{i}.png", "original_name": Path(names[i].replace("\\", "/")).name[:100]}
             for i in range(len(cleaned))
         ]
-        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "video": None, "view_limit": view_limit}
+        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "video": None, "view_limit": view_limit, "focus_subject": focus_subject}
         return app.state.jobs.create(cleaned, names, options)
 
     @app.get("/api/jobs")

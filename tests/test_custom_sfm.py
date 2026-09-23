@@ -2,7 +2,7 @@ import numpy as np
 from PIL import Image
 from plyfile import PlyData, PlyElement
 
-from studio.custom_sfm import _limit_patch_match_sources, _patch_match_profile, _prepare_images, _validate_registration, dense_cloud_to_gaussians, extract_video_frames, find_colmap
+from studio.custom_sfm import _focus_from_camera_rays, _gpu_indices, _limit_patch_match_sources, _patch_match_profile, _prepare_images, _validate_registration, dense_cloud_to_gaussians, extract_video_frames, find_colmap
 
 
 def test_prepare_images_makes_ordered_equal_square_frames(tmp_path):
@@ -38,6 +38,13 @@ def test_patch_match_profiles_bound_dense_work():
     assert _patch_match_profile(2000)["iterations"] == 5
 
 
+def test_all_visible_gpus_are_used(monkeypatch):
+    result = type("Result", (), {"returncode": 0, "stdout": "GPU 0: T4\nGPU 1: T4\n"})()
+    monkeypatch.delenv("GSS_GPU_INDEX", raising=False)
+    monkeypatch.setattr("studio.custom_sfm.subprocess.run", lambda *args, **kwargs: result)
+    assert _gpu_indices() == "0,1"
+
+
 def test_patch_match_source_views_are_bounded(tmp_path):
     stereo = tmp_path / "stereo"
     stereo.mkdir()
@@ -45,6 +52,15 @@ def test_patch_match_source_views_are_bounded(tmp_path):
     config.write_text("0000.jpg\n__auto__, 30\n0001.jpg\n__auto__\n", encoding="utf-8")
     assert _limit_patch_match_sources(tmp_path, 10) == 2
     assert config.read_text(encoding="utf-8") == "0000.jpg\n__auto__, 10\n0001.jpg\n__auto__, 10\n"
+
+
+def test_camera_rays_recover_central_subject():
+    target = np.array([0.0, 0.0, -3.0])
+    centers = np.array([[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0]], dtype=float)
+    directions = target - centers
+    focus = _focus_from_camera_rays(centers, directions)
+    np.testing.assert_allclose(focus["target"], target, atol=1e-6)
+    np.testing.assert_allclose(focus["source_camera"], centers[0])
 
 
 def test_dense_cloud_becomes_valid_oriented_gaussians(tmp_path):
@@ -63,6 +79,26 @@ def test_dense_cloud_becomes_valid_oriented_gaussians(tmp_path):
     assert np.all(result[:, 4:7] > 0)
     np.testing.assert_allclose(np.linalg.norm(result[:, 8:12], axis=1), 1, atol=1e-5)
     np.testing.assert_allclose(result[:, 12], 180 / 255, atol=1e-5)
+
+
+def test_dense_cloud_focus_crops_distant_background(tmp_path):
+    side = 170
+    yy, xx = np.mgrid[:side, :side]
+    count = side * side
+    fields = (("x", "f4"), ("y", "f4"), ("z", "f4"), ("nx", "f4"), ("ny", "f4"), ("nz", "f4"), ("red", "u1"), ("green", "u1"), ("blue", "u1"))
+    data = np.zeros(count, dtype=list(fields))
+    data["x"], data["y"] = xx.ravel() / side, yy.ravel() / side
+    data["nz"], data["red"], data["green"], data["blue"] = 1, 220, 60, 120
+    path = tmp_path / "focused.ply"
+    PlyData([PlyElement.describe(data, "vertex")], text=False).write(path)
+    stats = {}
+    result = dense_cloud_to_gaussians(
+        path,
+        focus={"target": np.array([0.5, 0.5, 0]), "camera_distance": 0.95, "source_camera": np.zeros(3)},
+        focus_stats=stats,
+    )
+    assert stats["subject_focus_applied"] is True
+    assert 10_000 <= len(result) < count
 
 
 def test_colmap_environment_override(tmp_path, monkeypatch):

@@ -66,6 +66,8 @@ The video path extracts 32, 40, or 48 sharp evenly spaced frames for Quick, Bala
 
 The pipeline rejects captures when fewer than eight cameras register, less than 55% of the inputs align, or the sparse model has fewer than 500 points. This is intentional: the viewer should not present disconnected noise as a successful 3D scene.
 
+For a flower or single object, leave **Focus central subject** enabled and keep that subject near the center of every frame. The app intersects the recovered camera viewing rays, crops the Gaussian result around that measured focus volume, and removes small disconnected fragments. Disable it only when the surrounding environment is intentionally part of the scene. This filtering cannot reconstruct petals or surfaces that moved, blurred, or were never visible.
+
 ## RTX A1000 8 GB settings
 
 - Start with **Balanced - 1600 px**.
@@ -75,6 +77,7 @@ The pipeline rejects captures when fewer than eight cameras register, less than 
 - High mode is optional and may exceed 8 GB VRAM.
 - Default job timeout is 120 minutes. Override with `GSS_JOB_TIMEOUT_MINUTES` if needed.
 - Dense PatchMatch reports an elapsed-time heartbeat and stops after 60 minutes by default. Override with `GSS_DENSE_TIMEOUT_MINUTES` if required.
+- Dense PatchMatch automatically uses every GPU reported by `nvidia-smi`; set `GSS_GPU_INDEX=0` to restrict it to one GPU.
 
 ## Kaggle GPU test
 

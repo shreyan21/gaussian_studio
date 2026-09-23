@@ -20,7 +20,7 @@ Do not mark hardware validation complete until every item passes on physical wor
 3. Capture one slow 20-60 second video or 20-30 sharp ordered photos around one stationary textured scene.
 4. Balanced reconstruction completes without CUDA out-of-memory.
 5. At least most images register; COLMAP log shows dense PatchMatch and stereo fusion completion.
-6. Viewer loads result and orbit shows one coherent object/scene, not separated copies.
+6. With central-subject focus enabled, viewer loads a compact coherent object without distant floating background islands; disable it to validate a deliberately wide scene.
 7. `scene.ply`, raw `dense.ply`, `scene.gsb`, `scene.json`, and `worker.log` download successfully.
 8. Restart Studio; completed scene still appears in Recent scenes.
 

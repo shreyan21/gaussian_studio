@@ -50,6 +50,11 @@ def test_preview_does_not_reduce_full_ply(tmp_path):
     assert len(raw) == 16+100*64
 
 
+def test_export_preserves_reconstructed_source_camera(tmp_path):
+    meta = export_scene(tmp_path, make_demo()[:100], {"engine": "test", "source_camera": [1, 2, 3]})
+    assert meta["source_camera"] == [1, 2, 3]
+
+
 def test_invalid_model_outputs_rejected():
     with pytest.raises(ValueError):
         validate(np.zeros((5,16)))

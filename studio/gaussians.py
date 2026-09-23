@@ -111,7 +111,7 @@ def export_scene(directory: Path, g, metadata, preview_limit=1_500_000):
         f.write(preview.astype("<f4", copy=False).tobytes())
     center = np.median(g[:, :3], axis=0)
     low, high = np.percentile(g[:, :3], [2, 98], axis=0)
-    metadata.update({"gaussians": len(g), "preview_gaussians": len(preview), "target": center.tolist(), "radius": max(float(np.linalg.norm(high-low) / 2), 0.1), "coordinate_system": "+X right, +Y up, -Z forward", "source_camera": [0, 0, 0], "format": "3DGS binary PLY, SH degree 0"})
+    metadata.update({"gaussians": len(g), "preview_gaussians": len(preview), "target": center.tolist(), "radius": max(float(np.linalg.norm(high-low) / 2), 0.1), "coordinate_system": "+X right, +Y up, -Z forward", "source_camera": metadata.get("source_camera", [0, 0, 0]), "format": "3DGS binary PLY, SH degree 0"})
     (directory / "scene.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return metadata
 
