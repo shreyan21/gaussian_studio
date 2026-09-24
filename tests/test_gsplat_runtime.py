@@ -3,6 +3,7 @@ import pytest
 from plyfile import PlyData
 
 from studio.gsplat_runtime import (
+    _adaptive_subject_crop_ratio,
     _clamp_log_scale_anisotropy_,
     _export_arrays,
     _subject_crop_bounds,
@@ -60,7 +61,14 @@ def test_subject_crop_follows_projected_focus_and_stays_in_frame():
     K = np.array([[100, 0, 100], [0, 100, 50], [0, 0, 1]], np.float32)
     viewmat = np.eye(4, dtype=np.float32)
     bounds = _subject_crop_bounds(200, 100, K, viewmat, np.array([1.5, 0, 3]))
-    assert bounds == (52, 13, 200, 87)
+    assert bounds == (64, 16, 200, 84)
+
+
+def test_subject_crop_adapts_to_camera_distance_with_safe_limits():
+    focus = {"target": np.zeros(3), "camera_distance": 10.0}
+    assert _adaptive_subject_crop_ratio(np.array([0, 0, 10]), focus) == pytest.approx(0.68)
+    assert _adaptive_subject_crop_ratio(np.array([0, 0, 20]), focus) == pytest.approx(0.48)
+    assert _adaptive_subject_crop_ratio(np.array([0, 0, 5]), focus) == pytest.approx(0.86)
 
 
 def test_training_clamps_anisotropy_without_changing_geometric_midpoint():
@@ -69,7 +77,7 @@ def test_training_clamps_anisotropy_without_changing_geometric_midpoint():
     _clamp_log_scale_anisotropy_(scales)
     ratios = torch.exp(scales.amax(dim=1) - scales.amin(dim=1))
     midpoints_after = (scales.amin(dim=1) + scales.amax(dim=1)) * 0.5
-    assert torch.all(ratios <= 8.00001)
+    assert torch.all(ratios <= 6.00001)
     torch.testing.assert_close(midpoints_after, midpoints_before)
 
 
@@ -104,4 +112,5 @@ def test_export_removes_highly_anisotropic_shards():
     stats = {}
     gaussians, _ = _export_arrays(splats, None, scene_scale=1.0, export_stats=stats)
     assert len(gaussians) == count - 1
-    assert stats["export_anisotropy_limit"] == 8.0
+    assert stats["export_anisotropy_limit"] == 6.0
+    assert stats["export_opacity_minimum"] == 0.1

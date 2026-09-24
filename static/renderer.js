@@ -98,7 +98,7 @@ export class GaussianViewer {
         this.worker.postMessage({ positions }, [positions.buffer]); this.reset();
     }
     reset() {
-        this.target = this.meta?.view_target?.slice() || this.meta?.target?.slice() || [0, 0, -3];
+        this.target = this.meta?.target?.slice() || [0, 0, -3];
         const eye = this.meta?.source_camera || [0, 0, 0], offset = eye.map((v, i) => v - this.target[i]);
         this.distance = Math.max(Math.hypot(...offset), 0.1); this.yaw = Math.atan2(offset[0], offset[2]); this.pitch = Math.asin(Math.max(-0.999, Math.min(0.999, offset[1] / this.distance)));
         this.baseYaw = this.yaw; this.basePitch = this.pitch; this.viewLimits = this.meta?.view_limits || null; this.autoDirection = 1;

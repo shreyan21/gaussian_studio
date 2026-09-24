@@ -26,9 +26,13 @@ TRAINING_PROFILES = {
     1600: {"image_side": 900, "steps": 9_000, "max_splats": 750_000},
     2000: {"image_side": 1080, "steps": 12_000, "max_splats": 1_000_000},
 }
-SUBJECT_CROP_RATIO = 0.74
-MAX_TRAINING_SCALE_RATIO = 8.0
-ANISOTROPY_PENALTY_START_RATIO = 6.0
+SUBJECT_CROP_RATIO = 0.68
+MIN_SUBJECT_CROP_RATIO = 0.48
+MAX_SUBJECT_CROP_RATIO = 0.86
+MAX_TRAINING_SCALE_RATIO = 6.0
+ANISOTROPY_PENALTY_START_RATIO = 4.5
+MIN_EXPORT_OPACITY = 0.10
+FOCUS_EXPORT_RADIUS_RATIO = 0.35
 
 
 def gsplat_ready() -> bool:
@@ -81,6 +85,26 @@ def _subject_crop_bounds(
     return left, top, left + crop_width, top + crop_height
 
 
+def _adaptive_subject_crop_ratio(camera_center: np.ndarray, focus: dict) -> float:
+    """Keep a reconstructed subject at a similar pixel scale as camera distance changes."""
+    distance = float(
+        np.linalg.norm(
+            np.asarray(camera_center, np.float32)
+            - np.asarray(focus["target"], np.float32)
+        )
+    )
+    reference = float(focus["camera_distance"])
+    if not np.isfinite(distance) or not np.isfinite(reference) or distance <= 1e-6 or reference <= 1e-6:
+        return SUBJECT_CROP_RATIO
+    return float(
+        np.clip(
+            SUBJECT_CROP_RATIO * reference / distance,
+            MIN_SUBJECT_CROP_RATIO,
+            MAX_SUBJECT_CROP_RATIO,
+        )
+    )
+
+
 def _load_training_views(workspace: Path, image_side: int, focus: dict | None):
     import pycolmap
 
@@ -93,6 +117,7 @@ def _load_training_views(workspace: Path, image_side: int, focus: dict | None):
         raise RuntimeError("True 3DGS training needs at least eight registered COLMAP cameras.")
 
     views = []
+    crop_ratios = []
     for image in registered:
         camera = reconstruction.cameras[image.camera_id]
         path = workspace / "images" / image.name
@@ -112,9 +137,16 @@ def _load_training_views(workspace: Path, image_side: int, focus: dict | None):
         )
         viewmat = _image_pose_matrix(image)
         if focus is not None:
+            crop_ratio = _adaptive_subject_crop_ratio(image.projection_center(), focus)
             left, top, right, bottom = _subject_crop_bounds(
-                width, height, K, viewmat, np.asarray(focus["target"], np.float32)
+                width,
+                height,
+                K,
+                viewmat,
+                np.asarray(focus["target"], np.float32),
+                ratio=crop_ratio,
             )
+            crop_ratios.append(crop_ratio)
             frame = frame.crop((left, top, right, bottom))
             K[0, 2] -= left
             K[1, 2] -= top
@@ -163,7 +195,11 @@ def _load_training_views(workspace: Path, image_side: int, focus: dict | None):
     front_height, front_width = views[0]["pixels"].shape[:2]
     front_fov_y = math.degrees(2.0 * math.atan(front_height / (2.0 * float(views[0]["K"][1, 1]))))
     return views, xyz, colors, scene_scale, {
-        "training_subject_crop_ratio": SUBJECT_CROP_RATIO if focus is not None else 1.0,
+        "training_subject_crop_ratio": round(float(np.median(crop_ratios)), 4) if crop_ratios else 1.0,
+        "training_subject_crop_ratio_range": (
+            [round(float(min(crop_ratios)), 4), round(float(max(crop_ratios)), 4)]
+            if crop_ratios else [1.0, 1.0]
+        ),
         "fov_y": round(front_fov_y, 4),
         "image_size": [front_width, front_height],
         "seed_points_before_focus": seed_points_before_focus,
@@ -268,7 +304,7 @@ def _export_arrays(
         & np.isfinite(opacities)
         & np.isfinite(colors).all(axis=1)
     )
-    keep = finite & (opacities >= 0.05) & (scales > 0).all(axis=1)
+    keep = finite & (opacities >= MIN_EXPORT_OPACITY) & (scales > 0).all(axis=1)
     scale_limit = None
     maximum_scale = np.max(scales, axis=1)
     minimum_scale = np.min(scales, axis=1)
@@ -285,7 +321,7 @@ def _export_arrays(
     if focus is not None:
         target = np.asarray(focus["target"], dtype=np.float32)
         distance = np.linalg.norm(means - target, axis=1)
-        focused = distance <= float(focus["camera_distance"] * 0.5)
+        focused = distance <= float(focus["camera_distance"] * FOCUS_EXPORT_RADIUS_RATIO)
         if np.count_nonzero(keep & focused) >= max(1_500, int(np.count_nonzero(keep) * 0.05)):
             keep &= focused
             focus_applied = True
@@ -310,7 +346,8 @@ def _export_arrays(
             "exported_gaussians": len(gaussians),
             "export_removed_gaussians": input_gaussians - len(gaussians),
             "export_scale_limit": round(float(scale_limit), 7) if scale_limit is not None else None,
-            "export_opacity_minimum": 0.05,
+            "export_opacity_minimum": MIN_EXPORT_OPACITY,
+            "export_focus_radius_ratio": FOCUS_EXPORT_RADIUS_RATIO if focus is not None else None,
             "export_anisotropy_limit": MAX_TRAINING_SCALE_RATIO,
         })
     return gaussians, focus_applied
@@ -439,7 +476,7 @@ def train_gaussian_scene(
         "trained_gaussians": len(gaussians),
         "training_image_side": profile["image_side"],
         "training_splat_budget": profile["max_splats"],
-        "recommended_splat_scale": 0.55,
+        "recommended_splat_scale": 0.50,
         "subject_focus_requested": focus_subject,
         "subject_focus_applied": focus_applied,
         **load_stats,
