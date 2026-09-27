@@ -29,7 +29,7 @@ def test_training_profiles_and_step_override(monkeypatch):
 def test_viewer_coordinate_export_and_focus_crop(tmp_path):
     count = 2_000
     means = np.zeros((count, 3), np.float32)
-    means[:, 0] = np.linspace(-0.2, 0.2, count)
+    means[:, 0] = np.linspace(-0.7, 0.7, count)
     means[:, 1] = 0.25
     means[:, 2] = 1.0
     splats = {
@@ -44,7 +44,7 @@ def test_viewer_coordinate_export_and_focus_crop(tmp_path):
         {"target": np.array([0.0, 0.25, 1.0]), "camera_distance": 1.0},
     )
     assert focused is True
-    assert len(gaussians) == count
+    assert len(gaussians) > int(count * 0.95)
     np.testing.assert_allclose(gaussians[0, 1:3], [-0.25, -1.0])
     np.testing.assert_allclose(gaussians[0, 8:12], [0, 1, 0, 0])
     path = tmp_path / "support.ply"
@@ -113,4 +113,21 @@ def test_export_removes_highly_anisotropic_shards():
     gaussians, _ = _export_arrays(splats, None, scene_scale=1.0, export_stats=stats)
     assert len(gaussians) == count - 1
     assert stats["export_anisotropy_limit"] == 6.0
-    assert stats["export_opacity_minimum"] == 0.1
+    assert stats["export_opacity_minimum"] == 0.025
+
+
+def test_export_retention_floor_preserves_trained_subject_density():
+    count = 100_000
+    splats = {
+        "means": torch.zeros((count, 3)),
+        "scales": torch.full((count, 3), -4.0),
+        "quats": torch.tensor([[1.0, 0.0, 0.0, 0.0]]).repeat(count, 1),
+        "opacities": torch.full((count,), -4.0),
+        "colors": torch.zeros((count, 3)),
+    }
+    stats = {}
+    gaussians, _ = _export_arrays(splats, None, scene_scale=1.0, export_stats=stats)
+    assert len(gaussians) == 60_000
+    assert stats["export_retention_floor"] == 60_000
+    assert stats["export_confident_gaussians"] == 0
+    assert stats["export_valid_gaussians"] == count

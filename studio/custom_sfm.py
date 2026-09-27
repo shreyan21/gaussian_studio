@@ -724,7 +724,7 @@ def dense_cloud_to_gaussians(
     focus_radius = None
     if focus is not None:
         focus_target = np.asarray(focus["target"], dtype=np.float32) * np.array([1, -1, -1], dtype=np.float32)
-        focus_radius = float(focus["camera_distance"] * 0.42)
+        focus_radius = float(focus["camera_distance"] * 0.65)
         subject_distance = np.linalg.norm(xyz - focus_target, axis=1)
         subject_keep = subject_distance <= focus_radius
         minimum = max(800, int(len(xyz) * 0.05))
@@ -843,7 +843,7 @@ def reconstruct(
         "dense_points": dense_points,
         "dense_file": "dense.ply",
         "source_camera": source_camera,
-        "view_limits": {"yaw_degrees": 70, "pitch_degrees": 40} if trained and focus_subject else None,
+        "view_limits": None,
         **focus_stats,
         **quality,
         "pretrained_weights": False,

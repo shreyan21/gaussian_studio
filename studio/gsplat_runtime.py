@@ -31,8 +31,14 @@ MIN_SUBJECT_CROP_RATIO = 0.48
 MAX_SUBJECT_CROP_RATIO = 0.86
 MAX_TRAINING_SCALE_RATIO = 6.0
 ANISOTROPY_PENALTY_START_RATIO = 4.5
-MIN_EXPORT_OPACITY = 0.10
-FOCUS_EXPORT_RADIUS_RATIO = 0.35
+MIN_EXPORT_OPACITY = 0.025
+MIN_VALID_EXPORT_OPACITY = 0.0051
+EXPORT_SCALE_MEDIAN_MULTIPLIER = 8.0
+EXPORT_SCALE_PERCENTILE = 99.5
+EXPORT_SCENE_SCALE_RATIO = 0.08
+FOCUS_EXPORT_RADIUS_RATIO = 0.72
+MIN_EXPORT_GAUSSIANS = 60_000
+MIN_EXPORT_RETENTION_RATIO = 0.18
 
 
 def gsplat_ready() -> bool:
@@ -304,27 +310,47 @@ def _export_arrays(
         & np.isfinite(opacities)
         & np.isfinite(colors).all(axis=1)
     )
-    keep = finite & (opacities >= MIN_EXPORT_OPACITY) & (scales > 0).all(axis=1)
+    valid = finite & (opacities >= MIN_VALID_EXPORT_OPACITY) & (scales > 0).all(axis=1)
     scale_limit = None
     maximum_scale = np.max(scales, axis=1)
     minimum_scale = np.min(scales, axis=1)
-    valid_scales = maximum_scale[keep]
+    anisotropy = maximum_scale / np.maximum(minimum_scale, 1e-8)
+    valid_scales = maximum_scale[valid]
+    scale_keep = valid.copy()
     if len(valid_scales):
         robust_limit = min(
-            float(np.median(valid_scales) * 4.0),
-            float(np.percentile(valid_scales, 98.5)),
+            float(np.median(valid_scales) * EXPORT_SCALE_MEDIAN_MULTIPLIER),
+            float(np.percentile(valid_scales, EXPORT_SCALE_PERCENTILE)),
         )
-        scale_limit = robust_limit if scene_scale is None else min(robust_limit, scene_scale * 0.04)
-        keep &= maximum_scale <= scale_limit
-        keep &= maximum_scale / np.maximum(minimum_scale, 1e-8) <= MAX_TRAINING_SCALE_RATIO
+        scale_limit = (
+            robust_limit
+            if scene_scale is None
+            else min(robust_limit, scene_scale * EXPORT_SCENE_SCALE_RATIO)
+        )
+        scale_keep &= maximum_scale <= scale_limit
+        scale_keep &= anisotropy <= MAX_TRAINING_SCALE_RATIO
+    candidate = scale_keep.copy()
     focus_applied = False
     if focus is not None:
         target = np.asarray(focus["target"], dtype=np.float32)
         distance = np.linalg.norm(means - target, axis=1)
         focused = distance <= float(focus["camera_distance"] * FOCUS_EXPORT_RADIUS_RATIO)
-        if np.count_nonzero(keep & focused) >= max(1_500, int(np.count_nonzero(keep) * 0.05)):
-            keep &= focused
+        if np.count_nonzero(candidate & focused) >= max(1_500, int(np.count_nonzero(candidate) * 0.03)):
+            candidate &= focused
             focus_applied = True
+    keep = candidate & (opacities >= MIN_EXPORT_OPACITY)
+    retention_floor = 0
+    if input_gaussians >= MIN_EXPORT_GAUSSIANS:
+        retention_floor = min(
+            int(np.count_nonzero(candidate)),
+            max(MIN_EXPORT_GAUSSIANS, int(math.ceil(input_gaussians * MIN_EXPORT_RETENTION_RATIO))),
+        )
+        if np.count_nonzero(keep) < retention_floor:
+            eligible = np.flatnonzero(candidate)
+            selected = eligible[
+                np.argpartition(opacities[eligible], -retention_floor)[-retention_floor:]
+            ]
+            keep[selected] = True
     indices = np.flatnonzero(keep)
     if len(indices) > maximum:
         indices = indices[np.argpartition(opacities[indices], -maximum)[-maximum:]]
@@ -345,6 +371,11 @@ def _export_arrays(
             "optimized_gaussians": input_gaussians,
             "exported_gaussians": len(gaussians),
             "export_removed_gaussians": input_gaussians - len(gaussians),
+            "export_valid_gaussians": int(np.count_nonzero(valid)),
+            "export_scale_gaussians": int(np.count_nonzero(scale_keep)),
+            "export_focus_gaussians": int(np.count_nonzero(candidate)),
+            "export_confident_gaussians": int(np.count_nonzero(candidate & (opacities >= MIN_EXPORT_OPACITY))),
+            "export_retention_floor": retention_floor,
             "export_scale_limit": round(float(scale_limit), 7) if scale_limit is not None else None,
             "export_opacity_minimum": MIN_EXPORT_OPACITY,
             "export_focus_radius_ratio": FOCUS_EXPORT_RADIUS_RATIO if focus is not None else None,
@@ -473,7 +504,7 @@ def train_gaussian_scene(
         "training_steps": steps,
         "training_loss": round(last_loss or 0.0, 6),
         "seed_points": len(xyz),
-        "trained_gaussians": len(gaussians),
+        "trained_gaussians": export_stats.get("optimized_gaussians", len(gaussians)),
         "training_image_side": profile["image_side"],
         "training_splat_budget": profile["max_splats"],
         "recommended_splat_scale": 0.50,
