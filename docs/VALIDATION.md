@@ -20,9 +20,10 @@ Do not mark hardware validation complete until every item passes on physical wor
 3. Capture one slow 20-60 second video or 20-30 sharp ordered photos around one stationary textured scene.
 4. Balanced reconstruction completes without CUDA out-of-memory.
 5. At least most images register; the log shows true 3D Gaussian training steps and increasing splat counts.
-6. With central-subject focus enabled, viewer loads a compact coherent object without distant floating background islands; disable it to validate a deliberately wide scene.
-7. `scene.ply`, support `dense.ply`, `scene.gsb`, `scene.json`, and `worker.log` download successfully.
-8. Restart Studio; completed scene still appears in Recent scenes.
+6. With central-subject focus enabled, viewer loads a compact coherent object without distant floating background islands. Confirm `component_filter_applied` and the before/after Gaussian counts in `scene.json`; disable focus to validate a deliberately wide scene.
+7. For an older focused result, click **Remove floating fragments**. A new `- cleaned` history entry must appear within seconds, the original entry must remain unchanged, and no COLMAP/3DGS training process should start.
+8. `scene.ply`, support `dense.ply`, `scene.gsb`, `scene.json`, and `worker.log` download successfully.
+9. Restart Studio; completed scene still appears in Recent scenes.
 
 ## Quality failure diagnosis
 

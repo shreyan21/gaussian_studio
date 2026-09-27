@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from plyfile import PlyData, PlyElement
+from scipy.spatial import cKDTree
 
 SH_C0 = 0.28209479177387814
 
@@ -96,8 +97,103 @@ def read_ply(path):
     return validate(g)
 
 
+def isolate_largest_subject(g, voxel_factor=3.0, minimum_ratio=0.55):
+    """Remove detached 3D islands from an already focused object scene.
+
+    The scale comes from each splat's sixth-neighbour distance, so the filter is
+    independent of the reconstruction's world units.  A majority guard keeps
+    the original scene whenever voxelisation would split the subject itself.
+    """
+    g = validate(g)
+    count = len(g)
+    stats = {
+        "component_filter_evaluated": True,
+        "component_filter_applied": False,
+        "component_input_gaussians": count,
+        "component_output_gaussians": count,
+        "component_removed_gaussians": 0,
+        "component_voxel_size": None,
+        "component_largest_ratio": 1.0,
+    }
+    if count < 1_500:
+        return g, stats
+
+    xyz = g[:, :3].astype(np.float64, copy=False)
+    neighbors = min(7, count)
+    distances, _ = cKDTree(xyz).query(xyz, k=neighbors, workers=-1)
+    spacing = distances[:, -1]
+    spacing = spacing[np.isfinite(spacing) & (spacing > 0)]
+    if not len(spacing):
+        return g, stats
+    voxel_size = max(float(np.median(spacing) * voxel_factor), 1e-6)
+    keys = np.floor((xyz - xyz.min(axis=0)) / voxel_size).astype(np.int64)
+    voxels, inverse, counts = np.unique(
+        keys, axis=0, return_inverse=True, return_counts=True
+    )
+    stats["component_voxel_size"] = round(voxel_size, 7)
+    if len(voxels) < 2:
+        return g, stats
+
+    lookup = {tuple(key): index for index, key in enumerate(voxels)}
+    parent = np.arange(len(voxels), dtype=np.int64)
+
+    def root(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left, right):
+        left, right = root(left), root(right)
+        if left != right:
+            parent[right] = left
+
+    offsets = [
+        (dx, dy, dz)
+        for dx in (-1, 0, 1)
+        for dy in (-1, 0, 1)
+        for dz in (-1, 0, 1)
+        if (dx, dy, dz) > (0, 0, 0)
+    ]
+    for index, key in enumerate(voxels):
+        base = tuple(key)
+        for offset in offsets:
+            neighbour = lookup.get(
+                tuple(base[axis] + offset[axis] for axis in range(3))
+            )
+            if neighbour is not None:
+                union(index, neighbour)
+
+    roots = np.array([root(index) for index in range(len(voxels))])
+    component_sizes = np.bincount(roots, weights=counts, minlength=len(voxels))
+    largest = int(np.argmax(component_sizes))
+    keep = roots[inverse] == largest
+    kept = int(np.count_nonzero(keep))
+    ratio = kept / count
+    stats["component_largest_ratio"] = round(ratio, 4)
+    # Do not damage multi-part or weakly connected subjects.  Also avoid
+    # rewriting a scene when only a negligible dusting of points was found.
+    if kept < max(1_500, int(count * minimum_ratio)) or count - kept < max(100, int(count * 0.005)):
+        return g, stats
+
+    stats.update(
+        component_filter_applied=True,
+        component_output_gaussians=kept,
+        component_removed_gaussians=count - kept,
+    )
+    return g[keep].copy(), stats
+
+
 def export_scene(directory: Path, g, metadata, preview_limit=1_500_000):
     g = validate(g)
+    if metadata.get("subject_focus_applied"):
+        g, component_stats = isolate_largest_subject(g)
+        metadata.update(component_stats)
+        if component_stats["component_filter_applied"]:
+            metadata["focused_points"] = len(g)
+            metadata["exported_gaussians"] = len(g)
+            if metadata.get("optimized_gaussians") is not None:
+                metadata["export_removed_gaussians"] = int(metadata["optimized_gaussians"]) - len(g)
     write_ply(directory / "scene.ply", g)
     # Spatially unbiased deterministic preview; full PLY retains every valid Gaussian.
     if len(g) > preview_limit:

@@ -14,7 +14,7 @@ This is per-scene optimization, not a pretrained general-purpose neural foundati
 2. Incremental structure-from-motion solves camera intrinsics, poses, and sparse geometry.
 3. `gsplat` initializes Gaussians from COLMAP's sparse geometry.
 4. CUDA optimizes their positions, colors, opacity, scale, and orientation against the registered photographs.
-5. The trained result is focused around the central subject and exported as portable 3DGS PLY/GSB files.
+5. The trained result is focused around the central subject, detached 3D islands are removed with a scale-adaptive connected-component pass, and the result is exported as portable 3DGS PLY/GSB files.
 
 If CUDA `gsplat` is unavailable, the previous PatchMatch pipeline remains as a fallback. It uses strict geometric fusion first, relaxed geometric fusion second, and photometric recovery only when necessary.
 
@@ -91,6 +91,8 @@ Import `notebooks/Gaussian_Studio_Custom_Kaggle.ipynb` into Kaggle, enable a GPU
 The Kaggle public-link video limit is 90 MB because Cloudflare Free accepts request bodies up to 100 MB and the multipart request adds overhead. Trim or compress a longer recording before upload. Local workstation mode defaults to 750 MB.
 
 Keep the code cell running while using the site. Kaggle storage is temporary. Download `scene.ply` immediately after each successful run. `dense.ply` is a support/debug cloud for trained scenes and the fused COLMAP cloud for fallback scenes.
+
+For a focused result made with older code, open it from **History** and press **Remove floating fragments**. This creates a separate cleaned scene from the saved Gaussian PLY in seconds; it preserves the original result and does not repeat camera registration or 3DGS training.
 
 ## Manual checks
 

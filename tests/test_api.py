@@ -1,10 +1,12 @@
 import io
 import json
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from studio.gaussians import read_ply, write_ply
 from studio.server import Jobs, atomic_json, create_app
 
 
@@ -127,6 +129,39 @@ def test_saved_video_can_be_rerun_with_current_code(client, monkeypatch, tmp_pat
     assert rerun["name"] == "flower-pot.mp4 - rerun"
     assert (folder / "input-video.mp4").read_bytes() == payload
     assert json.loads((folder / "request.json").read_text(encoding="utf-8"))["focus_subject"] is True
+
+
+def test_completed_focused_scene_can_be_cleaned_without_retraining(client, tmp_path):
+    job_id = "c" * 32
+    folder = tmp_path / "jobs" / job_id
+    folder.mkdir()
+    rng = np.random.default_rng(11)
+    g = np.zeros((2_400, 16), np.float32)
+    g[:2_000, :3] = rng.normal(0, 0.08, (2_000, 3))
+    g[2_000:, :3] = rng.normal((2, 2, 2), 0.05, (400, 3))
+    g[:, 3], g[:, 4:7], g[:, 8], g[:, 12:15] = 0.8, 0.01, 1, 0.5
+    write_ply(folder / "scene.ply", g)
+    atomic_json(folder / "scene.json", {"engine": "test", "subject_focus_applied": True})
+    atomic_json(folder / "request.json", {"engine": "custom", "inputs": [], "video": None})
+    atomic_json(folder / "job.json", {
+        "id": job_id,
+        "name": "plant.mp4",
+        "status": "completed",
+        "engine": "custom",
+        "image_count": 1,
+        "source_type": "video",
+    })
+
+    response = client.post(f"/api/jobs/{job_id}/clean")
+    assert response.status_code == 201
+    cleaned = response.json()
+    cleaned_folder = tmp_path / "jobs" / cleaned["id"]
+    assert cleaned["name"] == "plant.mp4 - cleaned"
+    assert len(read_ply(folder / "scene.ply")) == 2_400
+    assert len(read_ply(cleaned_folder / "scene.ply")) == 2_000
+    metadata = json.loads((cleaned_folder / "scene.json").read_text(encoding="utf-8"))
+    assert metadata["component_removed_gaussians"] == 400
+    assert metadata["cleaned_from_job"] == job_id
 
 
 def test_upload_names_are_canonicalized(client, monkeypatch):

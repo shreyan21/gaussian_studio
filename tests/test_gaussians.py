@@ -5,7 +5,7 @@ import pytest
 from PIL import Image
 from plyfile import PlyData
 
-from studio.gaussians import export_scene, from_depth, make_demo, read_ply, validate, write_ply
+from studio.gaussians import export_scene, from_depth, isolate_largest_subject, make_demo, read_ply, validate, write_ply
 
 
 def test_ply_preserves_real_gaussian_parameters(tmp_path):
@@ -53,6 +53,31 @@ def test_preview_does_not_reduce_full_ply(tmp_path):
 def test_export_preserves_reconstructed_source_camera(tmp_path):
     meta = export_scene(tmp_path, make_demo()[:100], {"engine": "test", "source_camera": [1, 2, 3]})
     assert meta["source_camera"] == [1, 2, 3]
+
+
+def test_isolated_subject_filter_removes_detached_gaussian_island():
+    rng = np.random.default_rng(8)
+    main = np.zeros((2_000, 16), np.float32)
+    main[:, :3] = rng.normal(0, 0.08, (len(main), 3))
+    island = np.zeros((400, 16), np.float32)
+    island[:, :3] = rng.normal((2, 2, 2), 0.05, (len(island), 3))
+    g = np.concatenate((main, island))
+    g[:, 3], g[:, 4:7], g[:, 8], g[:, 12:15] = 0.8, 0.01, 1, 0.5
+    cleaned, stats = isolate_largest_subject(g)
+    assert stats["component_filter_applied"] is True
+    assert len(cleaned) == 2_000
+    assert stats["component_removed_gaussians"] == 400
+
+
+def test_export_cleans_only_focused_subject_scenes(tmp_path):
+    rng = np.random.default_rng(9)
+    g = np.zeros((2_200, 16), np.float32)
+    g[:2_000, :3] = rng.normal(0, 0.08, (2_000, 3))
+    g[2_000:, :3] = rng.normal(2, 0.04, (200, 3))
+    g[:, 3], g[:, 4:7], g[:, 8], g[:, 12:15] = 0.8, 0.01, 1, 0.5
+    meta = export_scene(tmp_path, g, {"engine": "test", "subject_focus_applied": True})
+    assert meta["component_filter_applied"] is True
+    assert meta["gaussians"] == 2_000
 
 
 def test_invalid_model_outputs_rejected():

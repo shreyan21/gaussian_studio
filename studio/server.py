@@ -25,7 +25,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from studio.config import DATA, MAX_IMAGES, MAX_PIXELS, MAX_TOTAL_UPLOAD, MAX_UPLOAD, MAX_VIDEO_UPLOAD, ROOT
 from studio.custom_sfm import engine_ready
 from studio.gsplat_runtime import gsplat_ready
-from studio.gaussians import export_scene, make_demo
+from studio.gaussians import export_scene, make_demo, read_ply
 
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
@@ -161,6 +161,53 @@ class Jobs:
             self.active = new_id
             threading.Thread(target=self.run, args=(new_id,), daemon=True).start()
             return job
+
+    def clean(self, job_id):
+        """Create a cleaned copy of a completed focused scene without retraining."""
+        with self.lock:
+            source = self.path(job_id)
+            previous = json.loads((source / "job.json").read_text(encoding="utf-8"))
+            if previous.get("status") != "completed":
+                raise HTTPException(409, "The scene must finish before floating fragments can be removed.")
+            metadata = json.loads((source / "scene.json").read_text(encoding="utf-8"))
+            if not metadata.get("subject_focus_applied"):
+                raise HTTPException(409, "This scene was not reconstructed in central-subject mode.")
+            if metadata.get("component_filter_evaluated"):
+                raise HTTPException(409, "Connected-subject cleanup was already applied to this scene.")
+
+            new_id = uuid.uuid4().hex
+            destination = self.root / new_id
+            destination.mkdir()
+            for name in ("request.json", "thumbnail.jpg", "dense.ply"):
+                if (source / name).is_file():
+                    shutil.copy2(source / name, destination / name)
+            if (source / "request.json").is_file():
+                options = json.loads((source / "request.json").read_text(encoding="utf-8"))
+                input_names = [item["file"] for item in options.get("inputs", [])]
+                if options.get("video"):
+                    input_names.append(options["video"]["file"])
+                for name in input_names:
+                    if (source / name).is_file():
+                        shutil.copy2(source / name, destination / name)
+
+            metadata = dict(metadata)
+            metadata["cleaned_from_job"] = job_id
+            export_scene(destination, read_ply(source / "scene.ply"), metadata)
+            cleaned = json.loads((destination / "scene.json").read_text(encoding="utf-8"))
+            removed = int(cleaned.get("component_removed_gaussians", 0))
+            job = {
+                "id": new_id,
+                "name": previous.get("name", "Saved scene") + " - cleaned",
+                "created": datetime.now(timezone.utc).isoformat(),
+                "status": "completed",
+                "progress": 100,
+                "message": f"Scene ready; removed {removed:,} detached Gaussians",
+                "engine": previous.get("engine", "custom"),
+                "image_count": previous.get("image_count", metadata.get("input_count", 0)),
+                "source_type": previous.get("source_type", metadata.get("source_type", "photos")),
+            }
+            atomic_json(destination / "job.json", job)
+            return self.read(new_id)
 
     def run(self, job_id):
         path = self.root / job_id
@@ -425,6 +472,10 @@ def create_app(data_dir=None):
     @app.post("/api/jobs/{job_id}/retry", status_code=202)
     def retry(job_id: str):
         return app.state.jobs.retry(job_id)
+
+    @app.post("/api/jobs/{job_id}/clean", status_code=201)
+    def clean(job_id: str):
+        return app.state.jobs.clean(job_id)
 
     @app.get("/api/jobs/{job_id}/files/{filename}")
     def asset(job_id: str, filename: str):
