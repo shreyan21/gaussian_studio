@@ -22,21 +22,23 @@ from studio.gaussians import validate
 Progress = Callable[[int, str], None]
 
 TRAINING_PROFILES = {
-    1200: {"image_side": 720, "steps": 6_000, "max_splats": 500_000},
-    1600: {"image_side": 900, "steps": 9_000, "max_splats": 750_000},
-    2000: {"image_side": 1080, "steps": 12_000, "max_splats": 1_000_000},
+    1200: {"image_side": 720, "steps": 7_000, "max_splats": 500_000},
+    1600: {"image_side": 900, "steps": 11_000, "max_splats": 750_000},
+    2000: {"image_side": 1080, "steps": 15_000, "max_splats": 1_000_000},
 }
 SUBJECT_CROP_RATIO = 0.68
 MIN_SUBJECT_CROP_RATIO = 0.48
 MAX_SUBJECT_CROP_RATIO = 0.86
 MAX_TRAINING_SCALE_RATIO = 6.0
 ANISOTROPY_PENALTY_START_RATIO = 4.5
-MIN_EXPORT_OPACITY = 0.025
+MIN_EXPORT_OPACITY = 0.04
+FOCUSED_MIN_EXPORT_OPACITY = 0.02
 MIN_VALID_EXPORT_OPACITY = 0.0051
-EXPORT_SCALE_MEDIAN_MULTIPLIER = 8.0
-EXPORT_SCALE_PERCENTILE = 99.5
-EXPORT_SCENE_SCALE_RATIO = 0.08
+EXPORT_SCALE_MEDIAN_MULTIPLIER = 6.0
+EXPORT_SCALE_PERCENTILE = 99.0
+EXPORT_SCENE_SCALE_RATIO = 0.05
 FOCUS_EXPORT_RADIUS_RATIO = 0.72
+FOCUS_MASK_SUPPORT_THRESHOLD = 0.55
 MIN_EXPORT_GAUSSIANS = 60_000
 MIN_EXPORT_RETENTION_RATIO = 0.18
 
@@ -111,6 +113,82 @@ def _adaptive_subject_crop_ratio(camera_center: np.ndarray, focus: dict) -> floa
     )
 
 
+def _automatic_subject_mask(pixels: np.ndarray) -> tuple[np.ndarray, str]:
+    """Segment a centered object without pretrained weights.
+
+    GrabCut receives a conservative central-object prior rather than a fixed
+    rectangle.  That preserves thin leaves while declaring the image border as
+    definite background.  A bounded geometric prior is retained as a safe
+    fallback for unusually flat or low-contrast frames.
+    """
+    height, width = pixels.shape[:2]
+    yy, xx = np.mgrid[:height, :width]
+    nx = (xx + 0.5 - width * 0.5) / max(width * 0.5, 1)
+    ny = (yy + 0.5 - height * 0.53) / max(height * 0.5, 1)
+    broad = (nx / 0.91) ** 2 + (ny / 0.98) ** 2 <= 1.0
+    core = (nx / 0.28) ** 2 + (ny / 0.63) ** 2 <= 1.0
+    fallback = ((nx / 0.78) ** 2 + (ny / 0.93) ** 2 <= 1.0).astype(np.uint8)
+    try:
+        import cv2
+
+        labels = np.full((height, width), cv2.GC_PR_BGD, dtype=np.uint8)
+        labels[broad] = cv2.GC_PR_FGD
+        labels[core] = cv2.GC_FGD
+        border_x, border_y = max(2, width // 40), max(2, height // 40)
+        labels[:border_y] = cv2.GC_BGD
+        labels[-border_y:] = cv2.GC_BGD
+        labels[:, :border_x] = cv2.GC_BGD
+        labels[:, -border_x:] = cv2.GC_BGD
+        background = np.zeros((1, 65), np.float64)
+        foreground = np.zeros((1, 65), np.float64)
+        cv2.grabCut(
+            np.ascontiguousarray(pixels),
+            labels,
+            None,
+            background,
+            foreground,
+            5,
+            cv2.GC_INIT_WITH_MASK,
+        )
+        mask = np.isin(labels, (cv2.GC_FGD, cv2.GC_PR_FGD)).astype(np.uint8)
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        mask = cv2.dilate(mask, kernel, iterations=1)
+        mask &= broad.astype(np.uint8)
+        ratio = float(mask.mean())
+        if 0.04 <= ratio <= 0.82:
+            return mask, "grabcut-central-prior"
+    except Exception:
+        pass
+    return fallback, "geometric-central-prior"
+
+
+def _project_mask_support(means: np.ndarray, views: list[dict]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Score each 3D mean by agreement with foreground masks across cameras."""
+    hits = np.zeros(len(means), dtype=np.uint16)
+    seen = np.zeros(len(means), dtype=np.uint16)
+    for view in views:
+        mask = view.get("mask")
+        if mask is None:
+            continue
+        viewmat = np.asarray(view["viewmat"], dtype=np.float32)
+        K = np.asarray(view["K"], dtype=np.float32)
+        camera = means @ viewmat[:3, :3].T + viewmat[:3, 3]
+        depth = camera[:, 2]
+        good = np.isfinite(camera).all(axis=1) & (depth > 1e-5)
+        safe_depth = np.where(good, depth, 1.0)
+        x = np.rint(K[0, 0] * camera[:, 0] / safe_depth + K[0, 2]).astype(np.int64)
+        y = np.rint(K[1, 1] * camera[:, 1] / safe_depth + K[1, 2]).astype(np.int64)
+        height, width = mask.shape
+        good &= (x >= 0) & (x < width) & (y >= 0) & (y < height)
+        indices = np.flatnonzero(good)
+        seen[indices] += 1
+        hits[indices] += (mask[y[indices], x[indices]] >= 0.5).astype(np.uint16)
+    support = np.divide(hits, np.maximum(seen, 1), dtype=np.float32)
+    support[seen < 2] = 0
+    return support, hits, seen
+
+
 def _load_training_views(workspace: Path, image_side: int, focus: dict | None):
     import pycolmap
 
@@ -124,6 +202,8 @@ def _load_training_views(workspace: Path, image_side: int, focus: dict | None):
 
     views = []
     crop_ratios = []
+    foreground_ratios = []
+    mask_backends = []
     for image in registered:
         camera = reconstruction.cameras[image.camera_id]
         path = workspace / "images" / image.name
@@ -163,10 +243,17 @@ def _load_training_views(workspace: Path, image_side: int, focus: dict | None):
             frame = frame.resize(output_size, Image.Resampling.LANCZOS)
             K[0, :] *= output_size[0] / width
             K[1, :] *= output_size[1] / height
+        pixels = np.asarray(frame, dtype=np.uint8).copy()
+        mask = None
+        if focus is not None:
+            mask, mask_backend = _automatic_subject_mask(pixels)
+            foreground_ratios.append(float(mask.mean()))
+            mask_backends.append(mask_backend)
         views.append(
             {
                 "name": image.name,
-                "pixels": np.asarray(frame, dtype=np.uint8).copy(),
+                "pixels": pixels,
+                "mask": mask,
                 "K": K,
                 "viewmat": viewmat,
             }
@@ -211,6 +298,16 @@ def _load_training_views(workspace: Path, image_side: int, focus: dict | None):
         "seed_points_before_focus": seed_points_before_focus,
         "focus_seed_candidates": focus_seed_candidates,
         "seed_focus_applied": False,
+        "foreground_mask_backend": (
+            max(set(mask_backends), key=mask_backends.count) if mask_backends else None
+        ),
+        "training_foreground_ratio": (
+            round(float(np.median(foreground_ratios)), 4) if foreground_ratios else 1.0
+        ),
+        "training_foreground_ratio_range": (
+            [round(float(min(foreground_ratios)), 4), round(float(max(foreground_ratios)), 4)]
+            if foreground_ratios else [1.0, 1.0]
+        ),
     }
 
 
@@ -294,6 +391,7 @@ def _select_export_indices(
     focus: dict | None,
     scene_scale: float | None,
     maximum: int,
+    subject_support: np.ndarray | None = None,
 ) -> tuple[np.ndarray, bool, dict]:
     """Select useful splats without collapsing a trained subject to a sparse shell."""
     input_gaussians = len(means)
@@ -323,14 +421,22 @@ def _select_export_indices(
         scale_keep &= anisotropy <= MAX_TRAINING_SCALE_RATIO
     candidate = scale_keep.copy()
     focus_applied = False
+    mask_focus_count = None
     if focus is not None:
         target = np.asarray(focus["target"], dtype=np.float32)
         distance = np.linalg.norm(means - target, axis=1)
         focused = distance <= float(focus["camera_distance"] * FOCUS_EXPORT_RADIUS_RATIO)
+        if subject_support is not None:
+            if len(subject_support) != input_gaussians:
+                raise ValueError("subject_support must match the Gaussian count")
+            mask_focused = np.asarray(subject_support) >= FOCUS_MASK_SUPPORT_THRESHOLD
+            mask_focus_count = int(np.count_nonzero(candidate & mask_focused))
+            focused &= mask_focused
         if np.count_nonzero(candidate & focused) >= max(1_500, int(np.count_nonzero(candidate) * 0.03)):
             candidate &= focused
             focus_applied = True
-    keep = candidate & (opacities >= MIN_EXPORT_OPACITY)
+    opacity_minimum = FOCUSED_MIN_EXPORT_OPACITY if focus is not None else MIN_EXPORT_OPACITY
+    keep = candidate & (opacities >= opacity_minimum)
     retention_floor = 0
     if input_gaussians >= MIN_EXPORT_GAUSSIANS:
         retention_floor = min(
@@ -353,11 +459,13 @@ def _select_export_indices(
         "export_valid_gaussians": int(np.count_nonzero(valid)),
         "export_scale_gaussians": int(np.count_nonzero(scale_keep)),
         "export_focus_gaussians": int(np.count_nonzero(candidate)),
-        "export_confident_gaussians": int(np.count_nonzero(candidate & (opacities >= MIN_EXPORT_OPACITY))),
+        "export_confident_gaussians": int(np.count_nonzero(candidate & (opacities >= opacity_minimum))),
         "export_retention_floor": retention_floor,
         "export_scale_limit": round(float(scale_limit), 7) if scale_limit is not None else None,
-        "export_opacity_minimum": MIN_EXPORT_OPACITY,
+        "export_opacity_minimum": opacity_minimum,
         "export_focus_radius_ratio": FOCUS_EXPORT_RADIUS_RATIO if focus is not None else None,
+        "export_mask_support_threshold": FOCUS_MASK_SUPPORT_THRESHOLD if subject_support is not None else None,
+        "export_mask_supported_gaussians": mask_focus_count,
         "export_anisotropy_limit": MAX_TRAINING_SCALE_RATIO,
     }
 
@@ -368,6 +476,7 @@ def _export_arrays(
     scene_scale: float | None = None,
     maximum: int = 1_250_000,
     export_stats: dict | None = None,
+    subject_support: np.ndarray | None = None,
 ):
     import torch
 
@@ -379,8 +488,9 @@ def _export_arrays(
     colors = torch.sigmoid(splats["colors"]).detach().cpu().numpy().astype(np.float32)
     finite_attributes = np.isfinite(quats).all(axis=1) & np.isfinite(colors).all(axis=1)
     safe_opacities = np.where(finite_attributes, opacities, -np.inf)
+    input_gaussians = len(means)
     indices, focus_applied, filter_stats = _select_export_indices(
-        means, scales, safe_opacities, focus, scene_scale, maximum
+        means, scales, safe_opacities, focus, scene_scale, maximum, subject_support
     )
     means, scales, quats, opacities, colors = (
         array[indices] for array in (means, scales, quats, opacities, colors)
@@ -396,7 +506,7 @@ def _export_arrays(
     gaussians = validate(gaussians)
     if export_stats is not None:
         filter_stats["exported_gaussians"] = len(gaussians)
-        filter_stats["export_removed_gaussians"] = len(means) - len(gaussians)
+        filter_stats["export_removed_gaussians"] = input_gaussians - len(gaussians)
         export_stats.update(filter_stats)
     return gaussians, focus_applied
 
@@ -467,7 +577,7 @@ def train_gaussian_scene(
         K = torch.from_numpy(view["K"]).to(device=device)[None]
         viewmat = torch.from_numpy(view["viewmat"]).to(device=device)[None]
         height, width = view["pixels"].shape[:2]
-        rendered, _, info = rasterization(
+        rendered, rendered_alpha, info = rasterization(
             means=splats["means"],
             quats=splats["quats"],
             scales=torch.exp(splats["scales"]),
@@ -482,12 +592,28 @@ def train_gaussian_scene(
             rasterize_mode="classic",
         )
         strategy.step_pre_backward(splats, optimizers, state, step, info)
-        l1 = F.l1_loss(rendered, pixels)
+        mask_array = view.get("mask")
+        if mask_array is not None:
+            mask = torch.from_numpy(mask_array).to(device=device, dtype=torch.float32)[None, :, :, None]
+            background = torch.rand((1, 1, 1, 3), device=device)
+            target_composite = pixels * mask + background * (1.0 - mask)
+            rendered_composite = rendered + background * (1.0 - rendered_alpha)
+            alpha_loss = F.l1_loss(rendered_alpha, mask)
+        else:
+            target_composite = pixels
+            rendered_composite = rendered
+            alpha_loss = rendered.new_zeros(())
+        l1 = F.l1_loss(rendered_composite, target_composite)
         log_scale_span = splats["scales"].amax(dim=1) - splats["scales"].amin(dim=1)
         anisotropy_penalty = torch.relu(
             log_scale_span - math.log(ANISOTROPY_PENALTY_START_RATIO)
         ).mean()
-        loss = 0.8 * l1 + 0.2 * (1.0 - _ssim(rendered, pixels)) + 0.01 * anisotropy_penalty
+        loss = (
+            0.75 * l1
+            + 0.20 * (1.0 - _ssim(rendered_composite, target_composite))
+            + 0.04 * alpha_loss
+            + 0.01 * anisotropy_penalty
+        )
         loss.backward()
         for optimizer in optimizers.values():
             optimizer.step()
@@ -508,11 +634,21 @@ def train_gaussian_scene(
             percent = min(91, 60 + round(31 * (step + 1) / steps))
             progress(percent, f"Training true 3D Gaussians: {step + 1:,}/{steps:,} steps, {len(splats['means']):,} splats")
     export_stats = {}
+    subject_support = None
+    if focus_subject:
+        progress(92, "Removing background with multi-view foreground agreement")
+        trained_means = splats["means"].detach().cpu().numpy().astype(np.float32)
+        subject_support, support_hits, support_seen = _project_mask_support(trained_means, views)
+        export_stats.update({
+            "mask_support_views_median": round(float(np.median(support_seen)), 2),
+            "mask_support_hits_median": round(float(np.median(support_hits)), 2),
+        })
     gaussians, focus_applied = _export_arrays(
         splats,
         focus if focus_subject else None,
         scene_scale=scene_scale,
         export_stats=export_stats,
+        subject_support=subject_support,
     )
     version = getattr(gsplat, "__version__", "1.5.3")
     stats = {
@@ -524,7 +660,7 @@ def train_gaussian_scene(
         "trained_gaussians": export_stats.get("optimized_gaussians", len(gaussians)),
         "training_image_side": profile["image_side"],
         "training_splat_budget": profile["max_splats"],
-        "recommended_splat_scale": 0.50,
+        "recommended_splat_scale": 0.65,
         "subject_focus_requested": focus_subject,
         "subject_focus_applied": focus_applied,
         **load_stats,

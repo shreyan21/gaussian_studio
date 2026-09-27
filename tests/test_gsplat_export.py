@@ -39,6 +39,29 @@ def test_subject_volume_keeps_wide_three_dimensional_extent():
     assert stats["export_focus_radius_ratio"] == 0.72
 
 
+def test_subject_mask_support_removes_background_inside_focus_volume():
+    means, scales = _scene(4_000)
+    means[:, 0] = np.linspace(-0.5, 0.5, len(means))
+    opacities = np.full(len(means), 0.8, np.float32)
+    support = np.zeros(len(means), np.float32)
+    support[1_000:3_000] = 0.9
+    indices, focused, stats = _select_export_indices(
+        means,
+        scales,
+        opacities,
+        {"target": np.zeros(3), "camera_distance": 1.0},
+        scene_scale=1.0,
+        maximum=1_250_000,
+        subject_support=support,
+    )
+    assert focused is True
+    assert len(indices) == 2_000
+    assert indices.min() == 1_000
+    assert indices.max() == 2_999
+    assert stats["export_mask_support_threshold"] == 0.55
+    assert stats["export_mask_supported_gaussians"] == 2_000
+
+
 def test_export_still_removes_oversized_and_elongated_splats():
     means, scales = _scene(2_002)
     scales[-2] = [2.0, 0.01, 0.01]

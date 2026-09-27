@@ -19,7 +19,7 @@ def test_training_profiles_and_step_override(monkeypatch):
     monkeypatch.delenv("GSS_GSPLAT_STEPS", raising=False)
     assert _training_profile(1200) == {
         "image_side": 720,
-        "steps": 6000,
+        "steps": 7000,
         "max_splats": 500_000,
     }
     monkeypatch.setenv("GSS_GSPLAT_STEPS", "900")
@@ -113,7 +113,7 @@ def test_export_removes_highly_anisotropic_shards():
     gaussians, _ = _export_arrays(splats, None, scene_scale=1.0, export_stats=stats)
     assert len(gaussians) == count - 1
     assert stats["export_anisotropy_limit"] == 6.0
-    assert stats["export_opacity_minimum"] == 0.025
+    assert stats["export_opacity_minimum"] == 0.04
 
 
 def test_export_retention_floor_preserves_trained_subject_density():

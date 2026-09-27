@@ -65,11 +65,13 @@ Keep terminal open. Share complete tokenized URL only with trusted testers. Quic
 - Keep the subject roughly centered and make one continuous orbit.
 - Ordinary exposure and focus variation is tolerated, but moving petals and unseen surfaces cannot be reconstructed reliably.
 
-The video path extracts 32, 40, or 48 sharp evenly spaced frames for Quick, Balanced, or High quality. The corresponding 3DGS profiles use 6,000, 9,000, or 12,000 optimization steps and enforce GPU-memory splat budgets. Four photographs are normally insufficient for a 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
+The video path extracts 32, 40, or 48 sharp evenly spaced frames for Quick, Balanced, or High quality. The corresponding 3DGS profiles use 7,000, 11,000, or 15,000 optimization steps and enforce GPU-memory splat budgets. Four photographs are normally insufficient for a 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
 
 The pipeline rejects captures when fewer than eight cameras register, less than 55% of the inputs align, or the sparse model has fewer than 500 points. This is intentional: the viewer should not present disconnected noise as a successful 3D scene.
 
-For a flower or single object, leave **Focus central subject** enabled. The app triangulates the subject from recovered camera rays, follows its projected position in every training view, and adjusts each training crop for camera distance so an uneven hand-held orbit does not make the subject tiny in some frames. It keeps the complete COLMAP seed geometry for stable optimization, then removes distant, oversized, invalid, and excessively elongated splats during export while enforcing a density floor so thin leaves and rear surfaces are not discarded. The viewer permits a complete orbit; unseen or moving surfaces can still look incomplete. Disable focus only when the surrounding environment is intentionally part of the scene.
+For a plant, pot, product, or other single object, leave **Isolate central object** enabled. The app triangulates the subject from recovered camera rays, follows its projected position in every training view, and creates classical GrabCut foreground masks without pretrained weights. Those masks supervise opacity during training and are projected back across all registered cameras during export, so pavement, walls, and distant foliage are removed instead of merely blurred. A geometric fallback remains available for unusually low-contrast frames. Disable isolation only when the surrounding environment is intentionally part of the scene.
+
+Full-scene mode now uses stricter opacity, scale, and anisotropy filtering to suppress translucent smears while preserving a density floor for real surfaces. Thin moving leaves can still duplicate because a dynamic subject violates multi-view geometry; use a windless capture whenever possible.
 
 ## RTX A1000 8 GB settings
 
