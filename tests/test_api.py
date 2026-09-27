@@ -111,6 +111,24 @@ def test_custom_accepts_video_as_single_source(client, monkeypatch, tmp_path):
     assert (folder / "input-video.mp4").read_bytes() == payload
 
 
+def test_saved_video_can_be_rerun_with_current_code(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(Jobs, "run", lambda *args: None)
+    payload = b"\x00\x00\x00\x18ftypmp42" + b"0" * 2048
+    original = client.post(
+        "/api/jobs",
+        files={"images": ("flower-pot.mp4", payload, "video/mp4")},
+    ).json()
+    jobs = client.app.state.jobs
+    jobs.active = None
+    response = client.post(f"/api/jobs/{original['id']}/retry")
+    assert response.status_code == 202
+    rerun = response.json()
+    folder = tmp_path / "jobs" / rerun["id"]
+    assert rerun["name"] == "flower-pot.mp4 - rerun"
+    assert (folder / "input-video.mp4").read_bytes() == payload
+    assert json.loads((folder / "request.json").read_text(encoding="utf-8"))["focus_subject"] is True
+
+
 def test_upload_names_are_canonicalized(client, monkeypatch):
     monkeypatch.setattr(Jobs, "run", lambda *args: None)
     files = [("images", ("../../unsafe.png", photo(), "image/png"))] + views(11)

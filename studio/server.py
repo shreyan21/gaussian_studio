@@ -4,6 +4,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import subprocess
 import sys
@@ -120,6 +121,45 @@ class Jobs:
             atomic_json(path / "job.json", job)
             self.active = job_id
             threading.Thread(target=self.run, args=(job_id,), daemon=True).start()
+            return job
+
+    def retry(self, job_id):
+        """Re-run a saved capture with the currently installed reconstruction code."""
+        with self.lock:
+            if self.active:
+                raise HTTPException(409, "A reconstruction is already running. Wait for it or cancel it first.")
+            source = self.path(job_id)
+            previous = json.loads((source / "job.json").read_text(encoding="utf-8"))
+            options = json.loads((source / "request.json").read_text(encoding="utf-8"))
+            expected = []
+            if options.get("video"):
+                expected.append(options["video"]["file"])
+            else:
+                expected.extend(item["file"] for item in options.get("inputs", []))
+            missing = [name for name in expected if not (source / name).is_file()]
+            if missing:
+                raise HTTPException(409, "The original upload is no longer available; upload the capture again.")
+
+            new_id = uuid.uuid4().hex
+            destination = self.root / new_id
+            destination.mkdir()
+            shutil.copy2(source / "request.json", destination / "request.json")
+            for name in expected:
+                shutil.copy2(source / name, destination / name)
+            job = {
+                "id": new_id,
+                "name": previous.get("name", "Saved capture") + " - rerun",
+                "created": datetime.now(timezone.utc).isoformat(),
+                "status": "running",
+                "progress": 0,
+                "message": "Re-running saved capture with current code",
+                "engine": options["engine"],
+                "image_count": previous.get("image_count", len(expected)),
+                "source_type": previous.get("source_type", "video" if options.get("video") else "photos"),
+            }
+            atomic_json(destination / "job.json", job)
+            self.active = new_id
+            threading.Thread(target=self.run, args=(new_id,), daemon=True).start()
             return job
 
     def run(self, job_id):
@@ -381,6 +421,10 @@ def create_app(data_dir=None):
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel(job_id: str):
         return app.state.jobs.cancel(job_id)
+
+    @app.post("/api/jobs/{job_id}/retry", status_code=202)
+    def retry(job_id: str):
+        return app.state.jobs.retry(job_id)
 
     @app.get("/api/jobs/{job_id}/files/{filename}")
     def asset(job_id: str, filename: str):
