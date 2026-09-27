@@ -32,15 +32,17 @@ MAX_SUBJECT_CROP_RATIO = 0.86
 MAX_TRAINING_SCALE_RATIO = 6.0
 ANISOTROPY_PENALTY_START_RATIO = 4.5
 MIN_EXPORT_OPACITY = 0.04
-FOCUSED_MIN_EXPORT_OPACITY = 0.02
+FOCUSED_MIN_EXPORT_OPACITY = 0.04
 MIN_VALID_EXPORT_OPACITY = 0.0051
 EXPORT_SCALE_MEDIAN_MULTIPLIER = 6.0
 EXPORT_SCALE_PERCENTILE = 99.0
 EXPORT_SCENE_SCALE_RATIO = 0.05
-FOCUS_EXPORT_RADIUS_RATIO = 0.72
-FOCUS_MASK_SUPPORT_THRESHOLD = 0.55
+FOCUS_EXPORT_RADIUS_RATIO = 0.50
+FOCUS_MASK_SUPPORT_THRESHOLD = 0.72
 MIN_EXPORT_GAUSSIANS = 60_000
 MIN_EXPORT_RETENTION_RATIO = 0.18
+FOCUSED_MIN_EXPORT_GAUSSIANS = 30_000
+FOCUSED_MIN_EXPORT_RETENTION_RATIO = 0.08
 
 
 def gsplat_ready() -> bool:
@@ -116,23 +118,51 @@ def _adaptive_subject_crop_ratio(camera_center: np.ndarray, focus: dict) -> floa
 def _automatic_subject_mask(pixels: np.ndarray) -> tuple[np.ndarray, str]:
     """Segment a centered object without pretrained weights.
 
-    GrabCut receives a conservative central-object prior rather than a fixed
-    rectangle.  That preserves thin leaves while declaring the image border as
-    definite background.  A bounded geometric prior is retained as a safe
-    fallback for unusually flat or low-contrast frames.
+    GrabCut receives a central-object prior plus colour-novelty seeds learned
+    from the current frame border.  Unlike the previous broad definite-
+    foreground stripe, this does not force pavement between plant stems into
+    the object.  A bounded geometric prior remains a safe fallback.
     """
     height, width = pixels.shape[:2]
     yy, xx = np.mgrid[:height, :width]
     nx = (xx + 0.5 - width * 0.5) / max(width * 0.5, 1)
     ny = (yy + 0.5 - height * 0.53) / max(height * 0.5, 1)
-    broad = (nx / 0.91) ** 2 + (ny / 0.98) ** 2 <= 1.0
-    core = (nx / 0.28) ** 2 + (ny / 0.63) ** 2 <= 1.0
-    fallback = ((nx / 0.78) ** 2 + (ny / 0.93) ** 2 <= 1.0).astype(np.uint8)
+    broad = (nx / 0.84) ** 2 + (ny / 0.96) ** 2 <= 1.0
+    inner = (nx / 0.72) ** 2 + (ny / 0.90) ** 2 <= 1.0
+    core = (nx / 0.13) ** 2 + (ny / 0.20) ** 2 <= 1.0
+    fallback = ((nx / 0.66) ** 2 + (ny / 0.88) ** 2 <= 1.0).astype(np.uint8)
     try:
         import cv2
 
         labels = np.full((height, width), cv2.GC_PR_BGD, dtype=np.uint8)
-        labels[broad] = cv2.GC_PR_FGD
+        labels[inner] = cv2.GC_PR_FGD
+        lab = cv2.cvtColor(np.ascontiguousarray(pixels), cv2.COLOR_RGB2LAB).astype(np.float32)
+        border_width = max(3, min(height, width) // 14)
+        border = np.zeros((height, width), dtype=bool)
+        border[:border_width] = True
+        border[-border_width:] = True
+        border[:, :border_width] = True
+        border[:, -border_width:] = True
+        border_pixels = np.ascontiguousarray(
+            lab[border][::max(1, int(np.count_nonzero(border) // 4096))],
+            dtype=np.float32,
+        )
+        cv2.setRNGSeed(17)
+        clusters = max(1, min(4, len(border_pixels)))
+        _, _, centers = cv2.kmeans(
+            border_pixels,
+            clusters,
+            None,
+            (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.5),
+            3,
+            cv2.KMEANS_PP_CENTERS,
+        )
+        colour_distance = np.min(
+            np.linalg.norm(lab[:, :, None, :] - centers[None, None, :, :], axis=3),
+            axis=2,
+        )
+        novelty_threshold = float(np.percentile(colour_distance[broad], 72))
+        labels[broad & (colour_distance >= novelty_threshold)] = cv2.GC_FGD
         labels[core] = cv2.GC_FGD
         border_x, border_y = max(2, width // 40), max(2, height // 40)
         labels[:border_y] = cv2.GC_BGD
@@ -156,8 +186,13 @@ def _automatic_subject_mask(pixels: np.ndarray) -> tuple[np.ndarray, str]:
         mask = cv2.dilate(mask, kernel, iterations=1)
         mask &= broad.astype(np.uint8)
         ratio = float(mask.mean())
-        if 0.04 <= ratio <= 0.82:
-            return mask, "grabcut-central-prior"
+        backend = "grabcut-border-colour-prior"
+        if ratio > 0.55:
+            mask &= fallback
+            ratio = float(mask.mean())
+            backend = "grabcut-border-colour-bounded"
+        if 0.03 <= ratio <= 0.55:
+            return mask, backend
     except Exception:
         pass
     return fallback, "geometric-central-prior"
@@ -439,9 +474,11 @@ def _select_export_indices(
     keep = candidate & (opacities >= opacity_minimum)
     retention_floor = 0
     if input_gaussians >= MIN_EXPORT_GAUSSIANS:
+        minimum_gaussians = FOCUSED_MIN_EXPORT_GAUSSIANS if focus is not None else MIN_EXPORT_GAUSSIANS
+        retention_ratio = FOCUSED_MIN_EXPORT_RETENTION_RATIO if focus is not None else MIN_EXPORT_RETENTION_RATIO
         retention_floor = min(
             int(np.count_nonzero(candidate)),
-            max(MIN_EXPORT_GAUSSIANS, int(math.ceil(input_gaussians * MIN_EXPORT_RETENTION_RATIO))),
+            max(minimum_gaussians, int(math.ceil(input_gaussians * retention_ratio))),
         )
         if np.count_nonzero(keep) < retention_floor:
             eligible = np.flatnonzero(candidate)
@@ -577,7 +614,7 @@ def train_gaussian_scene(
         K = torch.from_numpy(view["K"]).to(device=device)[None]
         viewmat = torch.from_numpy(view["viewmat"]).to(device=device)[None]
         height, width = view["pixels"].shape[:2]
-        rendered, rendered_alpha, info = rasterization(
+        rendered, _, info = rasterization(
             means=splats["means"],
             quats=splats["quats"],
             scales=torch.exp(splats["scales"]),
@@ -592,26 +629,17 @@ def train_gaussian_scene(
             rasterize_mode="classic",
         )
         strategy.step_pre_backward(splats, optimizers, state, step, info)
-        mask_array = view.get("mask")
-        if mask_array is not None:
-            mask = torch.from_numpy(mask_array).to(device=device, dtype=torch.float32)[None, :, :, None]
-            background = torch.rand((1, 1, 1, 3), device=device)
-            target_composite = pixels * mask + background * (1.0 - mask)
-            rendered_composite = rendered + background * (1.0 - rendered_alpha)
-            alpha_loss = F.l1_loss(rendered_alpha, mask)
-        else:
-            target_composite = pixels
-            rendered_composite = rendered
-            alpha_loss = rendered.new_zeros(())
-        l1 = F.l1_loss(rendered_composite, target_composite)
+        # Train geometry and appearance against complete registered images.
+        # Classical masks are intentionally export-only: an imperfect mask must
+        # never teach 3DGS that real plant or pot pixels are transparent.
+        l1 = F.l1_loss(rendered, pixels)
         log_scale_span = splats["scales"].amax(dim=1) - splats["scales"].amin(dim=1)
         anisotropy_penalty = torch.relu(
             log_scale_span - math.log(ANISOTROPY_PENALTY_START_RATIO)
         ).mean()
         loss = (
-            0.75 * l1
-            + 0.20 * (1.0 - _ssim(rendered_composite, target_composite))
-            + 0.04 * alpha_loss
+            0.80 * l1
+            + 0.20 * (1.0 - _ssim(rendered, pixels))
             + 0.01 * anisotropy_penalty
         )
         loss.backward()
@@ -660,9 +688,11 @@ def train_gaussian_scene(
         "trained_gaussians": export_stats.get("optimized_gaussians", len(gaussians)),
         "training_image_side": profile["image_side"],
         "training_splat_budget": profile["max_splats"],
-        "recommended_splat_scale": 0.65,
+        "recommended_splat_scale": 0.50,
         "subject_focus_requested": focus_subject,
         "subject_focus_applied": focus_applied,
+        "foreground_masks_used_for_training": False,
+        "foreground_masks_used_for_export": bool(focus_subject),
         **load_stats,
         **export_stats,
     }

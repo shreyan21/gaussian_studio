@@ -22,8 +22,8 @@ def test_density_floor_preserves_low_opacity_trained_surfaces():
     assert stats["export_confident_gaussians"] == 0
 
 
-def test_subject_volume_keeps_wide_three_dimensional_extent():
-    means, scales = _scene(2_000)
+def test_subject_volume_rejects_points_outside_object_scale():
+    means, scales = _scene(4_000)
     means[:, 0] = np.linspace(-0.7, 0.7, len(means))
     opacities = np.full(len(means), 0.8, np.float32)
     indices, focused, stats = _select_export_indices(
@@ -35,8 +35,8 @@ def test_subject_volume_keeps_wide_three_dimensional_extent():
         maximum=1_250_000,
     )
     assert focused is True
-    assert len(indices) > int(len(means) * 0.95)
-    assert stats["export_focus_radius_ratio"] == 0.72
+    assert 2_800 < len(indices) < 2_900
+    assert stats["export_focus_radius_ratio"] == 0.50
 
 
 def test_subject_mask_support_removes_background_inside_focus_volume():
@@ -58,8 +58,24 @@ def test_subject_mask_support_removes_background_inside_focus_volume():
     assert len(indices) == 2_000
     assert indices.min() == 1_000
     assert indices.max() == 2_999
-    assert stats["export_mask_support_threshold"] == 0.55
+    assert stats["export_mask_support_threshold"] == 0.72
     assert stats["export_mask_supported_gaussians"] == 2_000
+
+
+def test_focused_density_floor_does_not_restore_background_noise():
+    means, scales = _scene(100_000)
+    opacities = np.full(len(means), 0.018, np.float32)
+    indices, focused, stats = _select_export_indices(
+        means,
+        scales,
+        opacities,
+        {"target": np.zeros(3), "camera_distance": 1.0},
+        scene_scale=1.0,
+        maximum=1_250_000,
+    )
+    assert focused is True
+    assert len(indices) == 30_000
+    assert stats["export_retention_floor"] == 30_000
 
 
 def test_export_still_removes_oversized_and_elongated_splats():

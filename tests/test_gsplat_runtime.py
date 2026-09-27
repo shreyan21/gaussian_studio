@@ -29,7 +29,7 @@ def test_training_profiles_and_step_override(monkeypatch):
 def test_viewer_coordinate_export_and_focus_crop(tmp_path):
     count = 2_000
     means = np.zeros((count, 3), np.float32)
-    means[:, 0] = np.linspace(-0.7, 0.7, count)
+    means[:, 0] = np.linspace(-0.45, 0.45, count)
     means[:, 1] = 0.25
     means[:, 2] = 1.0
     splats = {

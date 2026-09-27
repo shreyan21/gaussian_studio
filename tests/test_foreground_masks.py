@@ -19,11 +19,15 @@ def test_automatic_subject_mask_separates_center_from_border():
     image[25:108, 62:98] = [185, 55, 35]
     image[10:80, 77:83] = [35, 170, 60]
     mask, backend = _automatic_subject_mask(image)
-    assert backend in {"grabcut-central-prior", "geometric-central-prior"}
+    assert backend in {
+        "grabcut-border-colour-prior",
+        "grabcut-border-colour-bounded",
+        "geometric-central-prior",
+    }
     assert mask.shape == image.shape[:2]
     assert mask[60, 80] == 1
     assert mask[0, 0] == 0
-    assert 0.04 <= float(mask.mean()) <= 0.82
+    assert 0.03 <= float(mask.mean()) <= 0.55
 
 
 def test_project_mask_support_requires_multi_view_agreement():
