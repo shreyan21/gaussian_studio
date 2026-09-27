@@ -287,28 +287,20 @@ def _viewer_quaternions(quaternions: np.ndarray) -> np.ndarray:
     return np.column_stack((-x, w, -z, y)).astype(np.float32)
 
 
-def _export_arrays(
-    splats,
+def _select_export_indices(
+    means: np.ndarray,
+    scales: np.ndarray,
+    opacities: np.ndarray,
     focus: dict | None,
-    scene_scale: float | None = None,
-    maximum: int = 1_250_000,
-    export_stats: dict | None = None,
-):
-    import torch
-
-    means = splats["means"].detach().cpu().numpy().astype(np.float32)
-    scales = torch.exp(splats["scales"]).detach().cpu().numpy().astype(np.float32)
-    quats = splats["quats"].detach().cpu().numpy().astype(np.float32)
-    quats /= np.maximum(np.linalg.norm(quats, axis=1, keepdims=True), 1e-8)
-    opacities = torch.sigmoid(splats["opacities"]).detach().cpu().numpy().astype(np.float32)
-    colors = torch.sigmoid(splats["colors"]).detach().cpu().numpy().astype(np.float32)
+    scene_scale: float | None,
+    maximum: int,
+) -> tuple[np.ndarray, bool, dict]:
+    """Select useful splats without collapsing a trained subject to a sparse shell."""
     input_gaussians = len(means)
     finite = (
         np.isfinite(means).all(axis=1)
         & np.isfinite(scales).all(axis=1)
-        & np.isfinite(quats).all(axis=1)
         & np.isfinite(opacities)
-        & np.isfinite(colors).all(axis=1)
     )
     valid = finite & (opacities >= MIN_VALID_EXPORT_OPACITY) & (scales > 0).all(axis=1)
     scale_limit = None
@@ -354,6 +346,42 @@ def _export_arrays(
     indices = np.flatnonzero(keep)
     if len(indices) > maximum:
         indices = indices[np.argpartition(opacities[indices], -maximum)[-maximum:]]
+    return indices, focus_applied, {
+        "optimized_gaussians": input_gaussians,
+        "exported_gaussians": len(indices),
+        "export_removed_gaussians": input_gaussians - len(indices),
+        "export_valid_gaussians": int(np.count_nonzero(valid)),
+        "export_scale_gaussians": int(np.count_nonzero(scale_keep)),
+        "export_focus_gaussians": int(np.count_nonzero(candidate)),
+        "export_confident_gaussians": int(np.count_nonzero(candidate & (opacities >= MIN_EXPORT_OPACITY))),
+        "export_retention_floor": retention_floor,
+        "export_scale_limit": round(float(scale_limit), 7) if scale_limit is not None else None,
+        "export_opacity_minimum": MIN_EXPORT_OPACITY,
+        "export_focus_radius_ratio": FOCUS_EXPORT_RADIUS_RATIO if focus is not None else None,
+        "export_anisotropy_limit": MAX_TRAINING_SCALE_RATIO,
+    }
+
+
+def _export_arrays(
+    splats,
+    focus: dict | None,
+    scene_scale: float | None = None,
+    maximum: int = 1_250_000,
+    export_stats: dict | None = None,
+):
+    import torch
+
+    means = splats["means"].detach().cpu().numpy().astype(np.float32)
+    scales = torch.exp(splats["scales"]).detach().cpu().numpy().astype(np.float32)
+    quats = splats["quats"].detach().cpu().numpy().astype(np.float32)
+    quats /= np.maximum(np.linalg.norm(quats, axis=1, keepdims=True), 1e-8)
+    opacities = torch.sigmoid(splats["opacities"]).detach().cpu().numpy().astype(np.float32)
+    colors = torch.sigmoid(splats["colors"]).detach().cpu().numpy().astype(np.float32)
+    finite_attributes = np.isfinite(quats).all(axis=1) & np.isfinite(colors).all(axis=1)
+    safe_opacities = np.where(finite_attributes, opacities, -np.inf)
+    indices, focus_applied, filter_stats = _select_export_indices(
+        means, scales, safe_opacities, focus, scene_scale, maximum
+    )
     means, scales, quats, opacities, colors = (
         array[indices] for array in (means, scales, quats, opacities, colors)
     )
@@ -367,20 +395,9 @@ def _export_arrays(
     gaussians[:, 12:15] = np.clip(colors, 0, 1)
     gaussians = validate(gaussians)
     if export_stats is not None:
-        export_stats.update({
-            "optimized_gaussians": input_gaussians,
-            "exported_gaussians": len(gaussians),
-            "export_removed_gaussians": input_gaussians - len(gaussians),
-            "export_valid_gaussians": int(np.count_nonzero(valid)),
-            "export_scale_gaussians": int(np.count_nonzero(scale_keep)),
-            "export_focus_gaussians": int(np.count_nonzero(candidate)),
-            "export_confident_gaussians": int(np.count_nonzero(candidate & (opacities >= MIN_EXPORT_OPACITY))),
-            "export_retention_floor": retention_floor,
-            "export_scale_limit": round(float(scale_limit), 7) if scale_limit is not None else None,
-            "export_opacity_minimum": MIN_EXPORT_OPACITY,
-            "export_focus_radius_ratio": FOCUS_EXPORT_RADIUS_RATIO if focus is not None else None,
-            "export_anisotropy_limit": MAX_TRAINING_SCALE_RATIO,
-        })
+        filter_stats["exported_gaussians"] = len(gaussians)
+        filter_stats["export_removed_gaussians"] = len(means) - len(gaussians)
+        export_stats.update(filter_stats)
     return gaussians, focus_applied
 
 
