@@ -65,17 +65,18 @@ Keep terminal open. Share complete tokenized URL only with trusted testers. Quic
 - Keep the subject roughly centered and make one continuous orbit.
 - Ordinary exposure and focus variation is tolerated, but moving petals and unseen surfaces cannot be reconstructed reliably.
 
-The video path extracts 32, 40, or 48 sharp evenly spaced frames for Quick, Balanced, or High quality. The corresponding 3DGS profiles use 7,000, 11,000, or 15,000 optimization steps and enforce GPU-memory splat budgets. Four photographs are normally insufficient for a 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
+The video path extracts 28, 36, or 44 sharp evenly spaced frames for Quick, Balanced, or High quality. The corresponding 3DGS profiles use 4,800, 7,000, or 9,500 optimization steps with tighter GPU-memory splat budgets. Focused-object training uses a soft robust residual so moving petals and background pixels do not consume the scene as easily. Four photographs are normally insufficient for a 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
 
 The pipeline rejects captures when fewer than eight cameras register, less than 55% of the inputs align, or the sparse model has fewer than 500 points. This is intentional: the viewer should not present disconnected noise as a successful 3D scene.
 
-For a plant, pot, product, or other single object, leave **Isolate central object** enabled. The app triangulates the subject from recovered camera rays, follows its projected position in every training view, and creates classical GrabCut foreground masks without pretrained weights. Complete registered images train the 3D geometry; the masks are deliberately applied only during final multi-view export, so one imperfect mask cannot shatter the reconstruction. The final filter also requires strong agreement across cameras and a compact subject volume, removing pavement, walls, and distant foliage. A geometric fallback remains available for unusually low-contrast frames. Disable isolation only when the surrounding environment is intentionally part of the scene.
+For a plant, pot, product, or other single object, leave **Isolate central object** enabled. The app triangulates the subject from recovered camera rays, follows its projected position in every training view, and creates classical GrabCut foreground masks without pretrained weights. Complete registered images train the 3D geometry with a soft motion-robust loss; the masks are deliberately applied only during final multi-view export, so one imperfect mask cannot shatter the reconstruction. The final filter also requires strong agreement across cameras and a compact subject volume, removing pavement, walls, and distant foliage. A geometric fallback remains available for unusually low-contrast frames. Disable isolation only when the surrounding environment is intentionally part of the scene.
 
 Full-scene mode now uses stricter opacity, scale, and anisotropy filtering to suppress translucent smears while preserving a density floor for real surfaces. Thin moving leaves can still duplicate because a dynamic subject violates multi-view geometry; use a windless capture whenever possible.
 
 ## RTX A1000 8 GB settings
 
-- Start with **Balanced - 1600 px**.
+- Start with **Quick - 1200 px** on Kaggle or an 8 GB GPU.
+- Use **Balanced - 1600 px** only for a sharp, stationary capture when extra time is acceptable.
 - Close QGIS, games, WebGL-heavy tabs, and other GPU work.
 - Try 20-30 photographs first.
 - Use **Quick - 1200 px** after CUDA out-of-memory.

@@ -29,7 +29,7 @@ def main():
             raise RuntimeError("This build contains only the pretrained-free custom reconstruction engine.")
         video = options.get("video")
         if video:
-            frame_budget = {384: 32, 512: 40, 768: 48}[options["resolution"]]
+            frame_budget = {384: 28, 512: 36, 768: 44}[options["resolution"]]
             progress(directory, 3, f"Extracting up to {frame_budget} sharp, evenly spaced keyframes")
             paths = extract_video_frames(directory / video["file"], directory / "video-keyframes", max_frames=frame_budget)
             with Image.open(paths[0]) as source:

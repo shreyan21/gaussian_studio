@@ -22,9 +22,9 @@ from studio.gaussians import validate
 Progress = Callable[[int, str], None]
 
 TRAINING_PROFILES = {
-    1200: {"image_side": 720, "steps": 7_000, "max_splats": 500_000},
-    1600: {"image_side": 900, "steps": 11_000, "max_splats": 750_000},
-    2000: {"image_side": 1080, "steps": 15_000, "max_splats": 1_000_000},
+    1200: {"image_side": 640, "steps": 4_800, "max_splats": 350_000},
+    1600: {"image_side": 800, "steps": 7_000, "max_splats": 500_000},
+    2000: {"image_side": 960, "steps": 9_500, "max_splats": 750_000},
 }
 SUBJECT_CROP_RATIO = 0.68
 MIN_SUBJECT_CROP_RATIO = 0.48
@@ -43,6 +43,7 @@ MIN_EXPORT_GAUSSIANS = 60_000
 MIN_EXPORT_RETENTION_RATIO = 0.18
 FOCUSED_MIN_EXPORT_GAUSSIANS = 30_000
 FOCUSED_MIN_EXPORT_RETENTION_RATIO = 0.08
+FOCUS_ROBUST_RESIDUAL = 0.18
 
 
 def gsplat_ready() -> bool:
@@ -629,10 +630,20 @@ def train_gaussian_scene(
             rasterize_mode="classic",
         )
         strategy.step_pre_backward(splats, optimizers, state, step, info)
-        # Train geometry and appearance against complete registered images.
-        # Classical masks are intentionally export-only: an imperfect mask must
-        # never teach 3DGS that real plant or pot pixels are transparent.
-        l1 = F.l1_loss(rendered, pixels)
+        # Train against complete registered images. Classical masks remain
+        # export-only, while this soft residual weight prevents a few moving
+        # petals or background pixels from spawning large ghost structures.
+        absolute_error = torch.abs(rendered - pixels)
+        if focus_subject and step >= steps // 4:
+            residual = absolute_error.detach().mean(dim=-1, keepdim=True)
+            robust_weight = 0.20 + 0.80 / (
+                1.0 + (residual / FOCUS_ROBUST_RESIDUAL).square()
+            )
+            l1 = (absolute_error * robust_weight).sum() / (
+                robust_weight.sum() * 3.0
+            ).clamp_min(1e-6)
+        else:
+            l1 = F.l1_loss(rendered, pixels)
         log_scale_span = splats["scales"].amax(dim=1) - splats["scales"].amin(dim=1)
         anisotropy_penalty = torch.relu(
             log_scale_span - math.log(ANISOTROPY_PENALTY_START_RATIO)
@@ -693,6 +704,7 @@ def train_gaussian_scene(
         "subject_focus_applied": focus_applied,
         "foreground_masks_used_for_training": False,
         "foreground_masks_used_for_export": bool(focus_subject),
+        "training_robust_residual_scale": FOCUS_ROBUST_RESIDUAL if focus_subject else None,
         **load_stats,
         **export_stats,
     }

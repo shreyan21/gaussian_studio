@@ -18,9 +18,9 @@ torch = pytest.importorskip("torch")
 def test_training_profiles_and_step_override(monkeypatch):
     monkeypatch.delenv("GSS_GSPLAT_STEPS", raising=False)
     assert _training_profile(1200) == {
-        "image_side": 720,
-        "steps": 7000,
-        "max_splats": 500_000,
+        "image_side": 640,
+        "steps": 4800,
+        "max_splats": 350_000,
     }
     monkeypatch.setenv("GSS_GSPLAT_STEPS", "900")
     assert _training_profile(1600)["steps"] == 900
