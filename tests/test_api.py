@@ -34,6 +34,7 @@ def test_home_and_procedural_viewer_without_external_engine(client):
     assert health["app"] == "Gaussian Scene Studio"
     assert health["version"] == "4.0.0"
     assert health["max_images"] == 80
+    assert health["video_chunk_mb"] == 8
     assert set(health["engines"]) == {"custom", "gsplat"}
     assert client.get("/api/demo/scene.gsb").content[:4] == b"GSS1"
     assert client.get("/api/demo/scene.json").json()["method"] == "demo"
@@ -112,6 +113,56 @@ def test_custom_accepts_video_as_single_source(client, monkeypatch, tmp_path):
     assert request["inputs"] == []
     assert request["focus_subject"] is False
     assert (folder / "input-video.mp4").read_bytes() == payload
+
+
+def test_chunked_video_upload_reassembles_before_starting_job(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(Jobs, "run", lambda *args: None)
+    payload = b"\x00\x00\x00\x18ftypmp42" + b"chunked-video" * 400
+    response = client.post(
+        "/api/video-uploads",
+        data={"filename": "original-flower.mp4", "size": str(len(payload))},
+    )
+    assert response.status_code == 201
+    upload = response.json()
+    split = 2_000
+
+    first = client.put(
+        f"/api/video-uploads/{upload['id']}",
+        params={"offset": 0},
+        content=payload[:split],
+    )
+    second = client.put(
+        f"/api/video-uploads/{upload['id']}",
+        params={"offset": split},
+        content=payload[split:],
+    )
+    assert first.json()["received"] == split
+    assert second.json()["received"] == len(payload)
+
+    response = client.post(
+        f"/api/video-uploads/{upload['id']}/finish",
+        data={"device": "auto"},
+    )
+    assert response.status_code == 202
+    folder = tmp_path / "jobs" / response.json()["id"]
+    assert (folder / "input-video.mp4").read_bytes() == payload
+    assert json.loads((folder / "request.json").read_text(encoding="utf-8"))["resolution"] == 768
+
+
+def test_chunked_video_upload_rejects_wrong_offset_and_incomplete_finish(client):
+    payload = b"0" * 2_048
+    upload = client.post(
+        "/api/video-uploads",
+        data={"filename": "flower.mp4", "size": str(len(payload))},
+    ).json()
+
+    assert client.put(
+        f"/api/video-uploads/{upload['id']}",
+        params={"offset": 1},
+        content=payload,
+    ).status_code == 409
+    assert client.post(f"/api/video-uploads/{upload['id']}/finish").status_code == 409
+    assert client.delete(f"/api/video-uploads/{upload['id']}").status_code == 204
 
 
 def test_saved_video_can_be_rerun_with_current_code(client, monkeypatch, tmp_path):

@@ -30,6 +30,8 @@ from studio.gaussians import export_scene, make_demo, read_ply
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 FIXED_RESOLUTION = 768
 FIXED_FOCUS_SUBJECT = False
+VIDEO_UPLOAD_CHUNK = 8 * 1024 * 1024
+CHUNKED_VIDEO_UPLOAD_LIMIT = max(MAX_VIDEO_UPLOAD, 500 * 1024 * 1024)
 
 
 def terminate_process_tree(process):
@@ -94,7 +96,7 @@ class Jobs:
                 job["scene"] = json.loads((path / "scene.json").read_text())
             return job
 
-    def create(self, images, filenames, options, video_stream=None):
+    def create(self, images, filenames, options, video_stream=None, video_limit=MAX_VIDEO_UPLOAD):
         with self.lock:
             if self.active:
                 raise HTTPException(409, "A reconstruction is already running. Wait for it or cancel it first.")
@@ -107,8 +109,8 @@ class Jobs:
                 with destination.open("wb") as output:
                     while chunk := video_stream.read(1024 * 1024):
                         total += len(chunk)
-                        if total > MAX_VIDEO_UPLOAD:
-                            raise HTTPException(413, f"Video must be under {MAX_VIDEO_UPLOAD // 1024**2} MB")
+                        if total > video_limit:
+                            raise HTTPException(413, f"Video must be under {video_limit // 1024**2} MB")
                         output.write(chunk)
             else:
                 for index, image in enumerate(images):
@@ -290,7 +292,18 @@ class Jobs:
 
 def create_app(data_dir=None):
     storage = Path(data_dir) if data_dir else DATA
+    upload_root = storage / "uploads"
+    upload_root.mkdir(parents=True, exist_ok=True)
+    upload_lock = threading.Lock()
     access_token = os.environ.get("GSS_ACCESS_TOKEN", "").strip()
+
+    def video_upload_path(upload_id):
+        if not re.fullmatch(r"[0-9a-f]{32}", upload_id):
+            raise HTTPException(404, "Video upload not found")
+        path = upload_root / upload_id
+        if not (path / "upload.json").is_file():
+            raise HTTPException(404, "Video upload not found")
+        return path
 
     @asynccontextmanager
     async def lifespan(app):
@@ -379,7 +392,91 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        return {"app": "Gaussian Scene Studio", "version": "4.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready(), "gsplat": gsplat_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": MAX_VIDEO_UPLOAD // 1024**2, "remote_access": bool(access_token)}
+        return {"app": "Gaussian Scene Studio", "version": "4.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready(), "gsplat": gsplat_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": CHUNKED_VIDEO_UPLOAD_LIMIT // 1024**2, "video_chunk_mb": VIDEO_UPLOAD_CHUNK // 1024**2, "remote_access": bool(access_token)}
+
+    @app.post("/api/video-uploads", status_code=201)
+    def start_video_upload(
+        filename: str = Form(...),
+        size: int = Form(...),
+    ):
+        if app.state.jobs.active:
+            raise HTTPException(409, "A reconstruction is already running. Wait for it or cancel it first.")
+        clean_name = Path(filename.replace("\\", "/")).name[:100]
+        suffix = Path(clean_name).suffix.lower()
+        if suffix not in {".mp4", ".mov", ".m4v", ".webm"}:
+            raise HTTPException(415, "Use MP4, MOV, M4V, or WebM video")
+        if size < 1024:
+            raise HTTPException(415, "The uploaded video is empty or invalid")
+        if size > CHUNKED_VIDEO_UPLOAD_LIMIT:
+            raise HTTPException(413, f"Video must be under {CHUNKED_VIDEO_UPLOAD_LIMIT // 1024**2} MB")
+        upload_id = uuid.uuid4().hex
+        path = upload_root / upload_id
+        path.mkdir()
+        atomic_json(path / "upload.json", {
+            "id": upload_id,
+            "filename": clean_name,
+            "suffix": suffix,
+            "size": size,
+            "received": 0,
+            "created": time.time(),
+        })
+        (path / "video.part").touch()
+        return {"id": upload_id, "chunk_bytes": VIDEO_UPLOAD_CHUNK, "max_video_mb": CHUNKED_VIDEO_UPLOAD_LIMIT // 1024**2}
+
+    @app.put("/api/video-uploads/{upload_id}")
+    async def append_video_upload(upload_id: str, request: Request, offset: int):
+        path = video_upload_path(upload_id)
+        parts = []
+        total = 0
+        async for part in request.stream():
+            total += len(part)
+            if total > VIDEO_UPLOAD_CHUNK:
+                raise HTTPException(413, f"Each video chunk must be at most {VIDEO_UPLOAD_CHUNK // 1024**2} MB")
+            parts.append(part)
+        payload = b"".join(parts)
+        if not payload:
+            raise HTTPException(413, f"Each video chunk must be between 1 byte and {VIDEO_UPLOAD_CHUNK // 1024**2} MB")
+        with upload_lock:
+            metadata = json.loads((path / "upload.json").read_text(encoding="utf-8"))
+            if offset != metadata["received"]:
+                raise HTTPException(409, f"Expected upload offset {metadata['received']}")
+            if metadata["received"] + len(payload) > metadata["size"]:
+                raise HTTPException(413, "Video upload exceeds its declared size")
+            with (path / "video.part").open("ab") as output:
+                output.write(payload)
+            metadata["received"] += len(payload)
+            atomic_json(path / "upload.json", metadata)
+        return {"received": metadata["received"], "size": metadata["size"]}
+
+    @app.post("/api/video-uploads/{upload_id}/finish", status_code=202)
+    def finish_video_upload(
+        upload_id: str,
+        device: str = Form("auto"),
+    ):
+        if device not in ("auto", "cuda"):
+            raise HTTPException(422, "Dense custom reconstruction requires NVIDIA CUDA; choose Auto or NVIDIA CUDA")
+        path = video_upload_path(upload_id)
+        with upload_lock:
+            metadata = json.loads((path / "upload.json").read_text(encoding="utf-8"))
+            if metadata["received"] != metadata["size"]:
+                raise HTTPException(409, f"Video upload is incomplete: {metadata['received']} of {metadata['size']} bytes")
+        options = {"engine": "custom", "device": device, "resolution": FIXED_RESOLUTION, "depth_strength": 1.0, "inputs": [], "video": {"file": "input-video" + metadata["suffix"], "original_name": metadata["filename"]}, "view_limit": "auto", "focus_subject": FIXED_FOCUS_SUBJECT}
+        with (path / "video.part").open("rb") as video_stream:
+            job = app.state.jobs.create(
+                [],
+                [metadata["filename"]],
+                options,
+                video_stream=video_stream,
+                video_limit=CHUNKED_VIDEO_UPLOAD_LIMIT,
+            )
+        shutil.rmtree(path)
+        return job
+
+    @app.delete("/api/video-uploads/{upload_id}", status_code=204)
+    def discard_video_upload(upload_id: str):
+        path = video_upload_path(upload_id)
+        with upload_lock:
+            shutil.rmtree(path)
 
     @app.post("/api/jobs", status_code=202)
     async def upload(

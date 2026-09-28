@@ -85,7 +85,7 @@ Every reconstruction runs in full-scene mode. There is no central crop, foregrou
 
 Import `notebooks/Gaussian_Studio_Custom_Kaggle.ipynb` into Kaggle, enable a GPU and Internet in Notebook options, then run its single code cell. The notebook pulls the latest `master`, installs `pycolmap-cuda12==4.2.0` and `gsplat==1.5.3`, starts the app, and prints a protected Cloudflare link. Open the complete URL including `?token=...`; an unprotected URL correctly shows **Access denied**.
 
-The Kaggle public-link video limit is 90 MB because Cloudflare Free accepts request bodies up to 100 MB and the multipart request adds overhead. Trim or compress a longer recording before upload. Local workstation mode defaults to 750 MB.
+Kaggle accepts videos up to 500 MB. The browser sends videos in protected 8 MB chunks and the server reassembles them before reconstruction, avoiding Cloudflare's per-request body limit. Local workstation mode defaults to 750 MB. Keep enough free Kaggle working-storage space for the original video, extracted frames, and reconstruction outputs.
 
 Keep the code cell running while using the site. Kaggle storage is temporary. Download `scene.ply` immediately after each successful run. `dense.ply` is a support/debug cloud for trained scenes and the fused COLMAP cloud for fallback scenes.
 
