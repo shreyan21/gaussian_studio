@@ -131,6 +131,28 @@ def test_saved_video_can_be_rerun_with_current_code(client, monkeypatch, tmp_pat
     assert json.loads((folder / "request.json").read_text(encoding="utf-8"))["focus_subject"] is True
 
 
+def test_saved_video_rerun_uses_current_ui_settings(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(Jobs, "run", lambda *args: None)
+    payload = b"\x00\x00\x00\x18ftypmp42" + b"0" * 2048
+    original = client.post(
+        "/api/jobs",
+        files={"images": ("flower-pot.mp4", payload, "video/mp4")},
+        data={"resolution": "512", "focus_subject": "false"},
+    ).json()
+    client.app.state.jobs.active = None
+
+    response = client.post(
+        f"/api/jobs/{original['id']}/retry",
+        data={"resolution": "384", "focus_subject": "true"},
+    )
+
+    assert response.status_code == 202
+    folder = tmp_path / "jobs" / response.json()["id"]
+    request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
+    assert request["resolution"] == 384
+    assert request["focus_subject"] is True
+
+
 def test_completed_focused_scene_can_be_cleaned_without_retraining(client, tmp_path):
     job_id = "c" * 32
     folder = tmp_path / "jobs" / job_id

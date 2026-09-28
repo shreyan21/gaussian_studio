@@ -123,14 +123,20 @@ class Jobs:
             threading.Thread(target=self.run, args=(job_id,), daemon=True).start()
             return job
 
-    def retry(self, job_id):
-        """Re-run a saved capture with the currently installed reconstruction code."""
+    def retry(self, job_id, resolution=None, focus_subject=None):
+        """Re-run a saved capture with current code and optional current UI settings."""
         with self.lock:
             if self.active:
                 raise HTTPException(409, "A reconstruction is already running. Wait for it or cancel it first.")
             source = self.path(job_id)
             previous = json.loads((source / "job.json").read_text(encoding="utf-8"))
             options = json.loads((source / "request.json").read_text(encoding="utf-8"))
+            if resolution is not None:
+                if resolution not in (384, 512, 768):
+                    raise HTTPException(422, "Unsupported reconstruction resolution")
+                options["resolution"] = resolution
+            if focus_subject is not None:
+                options["focus_subject"] = focus_subject
             expected = []
             if options.get("video"):
                 expected.append(options["video"]["file"])
@@ -143,7 +149,7 @@ class Jobs:
             new_id = uuid.uuid4().hex
             destination = self.root / new_id
             destination.mkdir()
-            shutil.copy2(source / "request.json", destination / "request.json")
+            atomic_json(destination / "request.json", options)
             for name in expected:
                 shutil.copy2(source / name, destination / name)
             job = {
@@ -470,8 +476,12 @@ def create_app(data_dir=None):
         return app.state.jobs.cancel(job_id)
 
     @app.post("/api/jobs/{job_id}/retry", status_code=202)
-    def retry(job_id: str):
-        return app.state.jobs.retry(job_id)
+    def retry(
+        job_id: str,
+        resolution: int | None = Form(None),
+        focus_subject: bool | None = Form(None),
+    ):
+        return app.state.jobs.retry(job_id, resolution, focus_subject)
 
     @app.post("/api/jobs/{job_id}/clean", status_code=201)
     def clean(job_id: str):
