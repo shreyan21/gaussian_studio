@@ -13,7 +13,7 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) { throw "Command failed ($LASTEXITCODE): $Program $($Arguments -join ' ')" }
 }
 
-Write-Host 'Gaussian Scene Studio - pretrained-free setup' -ForegroundColor Cyan
+Write-Host 'Gaussian Scene Studio - hybrid geometry setup' -ForegroundColor Cyan
 if (-not (Test-Path -LiteralPath '.venv\Scripts\python.exe')) {
     $candidates = @()
     if ($PythonExe) { $candidates += $PythonExe }
@@ -51,6 +51,8 @@ if (-not $SkipGsplat) {
     # The precompiled wheel is installed without dependency resolution so pip cannot
     # replace CUDA PyTorch. This then supplies gsplat's small Python dependencies.
     Invoke-Checked $appPython @('-m','pip','install','-r','requirements-gsplat.txt')
+    Write-Host 'Caching the Apache-2.0 Depth Anything V2 Small geometry prior...' -ForegroundColor Cyan
+    Invoke-Checked $appPython @('scripts\depth_prior_smoke.py')
     Write-Host 'Testing the precompiled gsplat CUDA extension...' -ForegroundColor Cyan
     Invoke-Checked $appPython @('scripts\gsplat_smoke.py')
 }

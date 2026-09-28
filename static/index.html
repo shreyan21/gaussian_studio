@@ -10,10 +10,10 @@
   <div id="dropZone" class="drop-zone"><input id="imageInput" type="file" multiple accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/x-m4v,video/webm" aria-label="Choose one video or twelve to eighty images"><div id="uploadPrompt"><svg viewBox="0 0 40 40" fill="none" aria-hidden="true"><rect x="5" y="7" width="30" height="26" rx="4"/><path d="m8 28 9-9 7 7 5-5 6 6"/><circle cx="27" cy="14" r="3"/></svg><strong>Drop one video or 12-80 photos</strong><span>20-60 seconds or ordered overlapping views</span><small id="uploadLimits">MP4/MOV/WebM up to 750 MB · photos 20 MB each</small></div><div id="imagePreviews" class="image-previews" hidden></div></div>
   <p id="filename" class="file-caption">Walk slowly through a completely stationary scene. Keep 70-85% neighbouring overlap.</p>
   <label class="field-title" for="engine"><span class="step">2</span> Reconstruction</label>
-  <select id="engine"><option value="custom">COLMAP + trained 3D Gaussian splatting</option></select>
-  <p class="field-note">No pretrained reconstruction checkpoint. The app selects sharp keyframes, solves cameras, then optimizes the scene for those views.</p>
+  <select id="engine"><option value="custom">COLMAP + AI-guided 3D Gaussian splatting</option></select>
+  <p class="field-note">The AI predicts relative depth only. COLMAP solves the cameras, then the app optimizes the scene against the registered views.</p>
   <div class="field-row"><div><label for="device">Compute</label><select id="device"><option value="auto">NVIDIA CUDA (auto)</option><option value="cuda">NVIDIA CUDA</option></select></div><div><label>Detail</label><p class="field-note">High · 2000 px</p></div></div>
-  <p class="field-note">Full-scene reconstruction is fixed at 2000 px. All registered foreground and background geometry is retained automatically.</p>
+  <p class="field-note">Full-scene reconstruction is fixed at 2000 px. An AI depth prior improves smooth shapes while all registered foreground and background geometry is retained.</p>
   <button id="generateBtn" class="primary" type="submit" disabled>Create 3D scene <span aria-hidden="true">↗</span></button>
  </form>
  <section id="progressPanel" class="progress-panel" hidden aria-live="polite"><div class="progress-heading"><strong>Reconstructing</strong><span id="progressPercent">0%</span></div><progress id="progressBar" max="100" value="0"></progress><p id="progressMessage"></p><button id="cancelBtn" class="quiet danger">Cancel reconstruction</button></section>

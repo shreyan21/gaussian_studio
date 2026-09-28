@@ -4,7 +4,17 @@
 
 - Repository code: MIT (`LICENSE`).
 - Custom adaptive Gaussian conversion: `studio/custom_sfm.py`.
-- No pretrained neural reconstruction weights are downloaded or executed.
+- The final 3D scene is optimized from each user's registered images; no pretrained model directly emits the reconstruction.
+
+## Depth Anything V2 Small
+
+- Official model: https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf
+- Official project: https://github.com/DepthAnything/Depth-Anything-V2
+- Checkpoint: `depth-anything/Depth-Anything-V2-Small-hf` (24.8M parameters, approximately 100 MB).
+- Licence: Apache-2.0. The Base, Large, and Giant variants are not used because their official licence is CC-BY-NC-4.0.
+- Purpose: predicts relative inverse depth for a soft, per-view scale/shift-invariant 3DGS training loss. It does not replace COLMAP cameras or directly generate the exported scene.
+- The checkpoint is downloaded from Hugging Face during setup/first use and cached locally.
+- Preserve Apache-2.0 licence and attribution notices when redistributing the checkpoint.
 
 ## gsplat 1.5.3
 
@@ -33,6 +43,6 @@ COLMAP states its own library licence is independent of dependency licences. Pre
 
 ## Removed pretrained systems
 
-Apple SHARP, AnySplat, Depth Anything, Silueta, their checkpoints, vendored sources, download scripts, and UI modes are removed from this branch. Old Git history still contains earlier versions; do not redistribute old dependency bundles without reviewing their licences.
+Apple SHARP, AnySplat, Silueta, and their checkpoints, vendored sources, download scripts, and UI modes are removed from this branch. Depth Anything V2 Small was reintroduced solely as the Apache-2.0 soft depth prior documented above. Old Git history still contains earlier versions; do not redistribute old dependency bundles without reviewing their licences.
 
 This inventory is technical documentation, not legal advice.

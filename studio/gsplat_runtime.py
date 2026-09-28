@@ -17,6 +17,7 @@ from PIL import Image
 from plyfile import PlyData, PlyElement
 from scipy.spatial import cKDTree
 
+from studio.config import DATA
 from studio.gaussians import validate
 
 Progress = Callable[[int, str], None]
@@ -49,12 +50,24 @@ MIN_EXPORT_RETENTION_RATIO = 0.18
 FOCUSED_MIN_EXPORT_GAUSSIANS = 30_000
 FOCUSED_MIN_EXPORT_RETENTION_RATIO = 0.08
 FOCUS_ROBUST_RESIDUAL = 0.18
+AI_DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
+AI_DEPTH_LOSS_WEIGHT = 0.05
+AI_DEPTH_START_RATIO = 0.15
+
+
+def ai_depth_cache_dir() -> Path:
+    path = Path(os.environ.get("GSS_MODEL_CACHE", DATA / "models")).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def gsplat_ready() -> bool:
     if os.environ.get("GSS_DISABLE_GSPLAT", "").strip() == "1":
         return False
-    if importlib.util.find_spec("torch") is None or importlib.util.find_spec("gsplat") is None:
+    required = ["torch", "gsplat"]
+    if os.environ.get("GSS_DISABLE_AI_DEPTH", "").strip() != "1":
+        required.append("transformers")
+    if any(importlib.util.find_spec(package) is None for package in required):
         return False
     try:
         import torch
@@ -369,6 +382,111 @@ def _ssim(prediction, target):
     return score.mean()
 
 
+def _scale_shift_invariant_depth_loss(rendered_depth, predicted_inverse_depth, alpha):
+    """Compare inverse-depth structure without trusting monocular metric scale."""
+    import torch
+    import torch.nn.functional as F
+
+    if predicted_inverse_depth.ndim == 2:
+        predicted_inverse_depth = predicted_inverse_depth[None, :, :, None]
+    elif predicted_inverse_depth.ndim == 3:
+        predicted_inverse_depth = predicted_inverse_depth[:, :, :, None]
+    predicted_inverse_depth = predicted_inverse_depth.to(
+        device=rendered_depth.device,
+        dtype=rendered_depth.dtype,
+    )
+    valid = (
+        torch.isfinite(rendered_depth)
+        & torch.isfinite(predicted_inverse_depth)
+        & (rendered_depth > 1e-4)
+        & (alpha > 0.25)
+    )
+    weights = valid.to(dtype=rendered_depth.dtype)
+    weight_sum = weights.sum().clamp_min(1.0)
+    rendered_inverse = torch.nan_to_num(rendered_depth, nan=1.0, posinf=1.0, neginf=1.0).clamp_min(1e-4).reciprocal()
+    predicted_inverse = torch.nan_to_num(predicted_inverse_depth)
+
+    def normalize(values):
+        mean = (values * weights).sum() / weight_sum
+        variance = ((values - mean).square() * weights).sum() / weight_sum
+        return (values - mean) / variance.sqrt().clamp_min(1e-4)
+
+    residual = F.smooth_l1_loss(
+        normalize(rendered_inverse),
+        normalize(predicted_inverse),
+        beta=0.1,
+        reduction="none",
+    )
+    # Keep the entire calculation on the GPU. A Python-side valid-pixel count
+    # would synchronize CUDA on every optimization step and noticeably slow
+    # longer scenes.
+    return (residual * weights).sum() / weight_sum
+
+
+def _attach_ai_depth_priors(views: list[dict], device: str, progress: Progress) -> dict:
+    """Predict per-view relative inverse depth, then release the model VRAM."""
+    if os.environ.get("GSS_DISABLE_AI_DEPTH", "").strip() == "1":
+        return {"ai_depth_prior": None, "ai_depth_views": 0, "ai_depth_disabled": True}
+    try:
+        import torch
+        import torch.nn.functional as F
+        from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+    except ImportError as exc:
+        raise RuntimeError(
+            "Depth Anything V2 Small is not installed. Rerun setup and restart Studio."
+        ) from exc
+
+    progress(59, "Predicting AI depth structure for smooth surfaces")
+    try:
+        cache_dir = ai_depth_cache_dir()
+        processor = AutoImageProcessor.from_pretrained(
+            AI_DEPTH_MODEL_ID,
+            cache_dir=cache_dir,
+            use_fast=False,
+        )
+        model = AutoModelForDepthEstimation.from_pretrained(AI_DEPTH_MODEL_ID, cache_dir=cache_dir)
+        model = model.to(device).eval()
+        for index, view in enumerate(views):
+            image = Image.fromarray(view["pixels"])
+            inputs = {
+                name: value.to(device)
+                for name, value in processor(images=image, return_tensors="pt").items()
+            }
+            with torch.inference_mode():
+                predicted = model(**inputs).predicted_depth
+                predicted = F.interpolate(
+                    predicted.unsqueeze(1),
+                    size=view["pixels"].shape[:2],
+                    mode="bicubic",
+                    align_corners=False,
+                )[0, 0].float()
+                finite = predicted[torch.isfinite(predicted)]
+                if finite.numel() < 64:
+                    raise RuntimeError(f"AI depth prediction failed for {view['name']}")
+                low, high = torch.quantile(finite, torch.tensor([0.01, 0.99], device=device))
+                predicted = predicted.clamp(low, high)
+                predicted = (predicted - low) / (high - low).clamp_min(1e-6)
+                view["ai_inverse_depth"] = predicted.to(dtype=torch.float16).cpu().numpy()
+            if index and index % max(1, len(views) // 4) == 0:
+                progress(59, f"Predicting AI depth structure: {index + 1}/{len(views)} views")
+    except Exception as exc:
+        raise RuntimeError(
+            "Depth Anything V2 Small could not load or predict depth. Keep Internet enabled for the first run."
+        ) from exc
+    finally:
+        if "model" in locals():
+            del model
+        if "inputs" in locals():
+            del inputs
+        torch.cuda.empty_cache()
+    return {
+        "ai_depth_prior": AI_DEPTH_MODEL_ID,
+        "ai_depth_views": len(views),
+        "ai_depth_loss_weight": AI_DEPTH_LOSS_WEIGHT,
+        "ai_depth_scale_alignment": "per-view normalized inverse depth",
+    }
+
+
 def _clamp_log_scale_anisotropy_(log_scales, maximum_ratio: float = MAX_TRAINING_SCALE_RATIO) -> None:
     """Bound every Gaussian axis ratio while preserving its overall footprint."""
     import torch
@@ -631,6 +749,7 @@ def train_gaussian_scene(
     device = "cuda:0"
     torch.manual_seed(42)
     np.random.seed(42)
+    ai_depth_stats = _attach_ai_depth_priors(views, device, progress)
     splats, optimizers = _initial_parameters(xyz, seed_colors, scene_scale, device)
     steps = profile["steps"]
     strategy = DefaultStrategy(
@@ -653,6 +772,7 @@ def train_gaussian_scene(
     )
     report_every = max(50, steps // 25)
     last_loss = None
+    last_depth_loss = None
     splat_budget_reached = False
     for step in range(steps):
         view = views[np.random.randint(0, len(views))]
@@ -660,7 +780,11 @@ def train_gaussian_scene(
         K = torch.from_numpy(view["K"]).to(device=device)[None]
         viewmat = torch.from_numpy(view["viewmat"]).to(device=device)[None]
         height, width = view["pixels"].shape[:2]
-        rendered, _, info = rasterization(
+        use_depth_prior = (
+            "ai_inverse_depth" in view
+            and step >= int(steps * AI_DEPTH_START_RATIO)
+        )
+        rendered_channels, alpha, info = rasterization(
             means=splats["means"],
             quats=splats["quats"],
             scales=torch.exp(splats["scales"]),
@@ -672,8 +796,10 @@ def train_gaussian_scene(
             height=height,
             packed=True,
             absgrad=strategy.absgrad,
+            render_mode="RGB+ED" if use_depth_prior else "RGB",
             rasterize_mode="classic",
         )
+        rendered = rendered_channels[..., :3]
         strategy.step_pre_backward(splats, optimizers, state, step, info)
         # Train against complete registered images. Classical masks remain
         # export-only, while this soft residual weight prevents a few moving
@@ -693,10 +819,19 @@ def train_gaussian_scene(
         anisotropy_penalty = torch.relu(
             log_scale_span - math.log(ANISOTROPY_PENALTY_START_RATIO)
         ).mean()
+        depth_loss = rendered.sum() * 0.0
+        if use_depth_prior:
+            predicted_inverse_depth = torch.from_numpy(view["ai_inverse_depth"])
+            depth_loss = _scale_shift_invariant_depth_loss(
+                rendered_channels[..., 3:4],
+                predicted_inverse_depth,
+                alpha,
+            )
         loss = (
             0.80 * l1
             + 0.20 * (1.0 - _ssim(rendered, pixels))
             + 0.01 * anisotropy_penalty
+            + AI_DEPTH_LOSS_WEIGHT * depth_loss
         )
         loss.backward()
         for optimizer in optimizers.values():
@@ -714,6 +849,7 @@ def train_gaussian_scene(
                 f"Reached the {profile['max_splats']:,}-splat GPU budget; refining appearance",
             )
         last_loss = float(loss.detach().cpu())
+        last_depth_loss = float(depth_loss.detach().cpu()) if use_depth_prior else last_depth_loss
         if step % report_every == 0 or step == steps - 1:
             percent = min(91, 60 + round(31 * (step + 1) / steps))
             progress(percent, f"Training true 3D Gaussians: {step + 1:,}/{steps:,} steps, {len(splats['means']):,} splats")
@@ -750,6 +886,8 @@ def train_gaussian_scene(
         "foreground_masks_used_for_training": False,
         "foreground_masks_used_for_export": bool(focus_subject),
         "training_robust_residual_scale": FOCUS_ROBUST_RESIDUAL if focus_subject else None,
+        "training_ai_depth_loss": round(last_depth_loss or 0.0, 6),
+        **ai_depth_stats,
         **load_stats,
         **export_stats,
     }

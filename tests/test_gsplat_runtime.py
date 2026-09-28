@@ -6,6 +6,7 @@ from studio.gsplat_runtime import (
     _adaptive_subject_crop_ratio,
     _clamp_log_scale_anisotropy_,
     _export_arrays,
+    _scale_shift_invariant_depth_loss,
     _select_export_indices,
     _subject_crop_bounds,
     _training_profile,
@@ -162,3 +163,35 @@ def test_focused_export_keeps_limited_nearby_context():
     assert stats["export_subject_gaussians"] == 4_000
     assert stats["export_context_gaussians"] == 1_000
     assert stats["export_context_radius_ratio"] == 0.62
+
+
+def test_ai_depth_loss_ignores_monocular_scale_and_shift():
+    inverse_depth = torch.linspace(0.2, 1.2, 100).reshape(1, 10, 10, 1)
+    rendered_depth = inverse_depth.reciprocal().requires_grad_(True)
+    predicted_inverse = inverse_depth[0, :, :, 0] * 3.5 + 7.0
+    alpha = torch.ones_like(rendered_depth)
+
+    loss = _scale_shift_invariant_depth_loss(
+        rendered_depth,
+        predicted_inverse,
+        alpha,
+    )
+
+    assert loss.item() < 1e-6
+    loss.backward()
+    assert rendered_depth.grad is not None
+
+
+def test_ai_depth_loss_penalizes_wrong_surface_order():
+    inverse_depth = torch.linspace(0.2, 1.2, 100).reshape(1, 10, 10, 1)
+    rendered_depth = inverse_depth.reciprocal()
+    predicted_inverse = torch.flip(inverse_depth[0, :, :, 0], dims=(0, 1))
+    alpha = torch.ones_like(rendered_depth)
+
+    loss = _scale_shift_invariant_depth_loss(
+        rendered_depth,
+        predicted_inverse,
+        alpha,
+    )
+
+    assert loss.item() > 0.5

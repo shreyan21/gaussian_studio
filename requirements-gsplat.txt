@@ -1,3 +1,4 @@
 # Optional true 3D Gaussian training. Kaggle already supplies CUDA PyTorch.
 gsplat==1.5.3
 ninja==1.13.0
+transformers==4.57.6
