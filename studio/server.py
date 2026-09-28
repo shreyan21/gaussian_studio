@@ -29,7 +29,7 @@ from studio.gaussians import export_scene, make_demo, read_ply
 
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 FIXED_RESOLUTION = 768
-FIXED_FOCUS_SUBJECT = True
+FIXED_FOCUS_SUBJECT = False
 
 
 def terminate_process_tree(process):

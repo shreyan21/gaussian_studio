@@ -92,7 +92,7 @@ def test_custom_multiview_saved_in_order(client, monkeypatch, tmp_path):
     assert job["image_count"] == 20
     assert request["engine"] == "custom"
     assert request["resolution"] == 768
-    assert request["focus_subject"] is True
+    assert request["focus_subject"] is False
     assert [item["original_name"] for item in request["inputs"]] == [f"view-{i:02d}.png" for i in range(20)]
 
 
@@ -110,7 +110,7 @@ def test_custom_accepts_video_as_single_source(client, monkeypatch, tmp_path):
     request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
     assert request["video"]["file"] == "input-video.mp4"
     assert request["inputs"] == []
-    assert request["focus_subject"] is True
+    assert request["focus_subject"] is False
     assert (folder / "input-video.mp4").read_bytes() == payload
 
 
@@ -129,7 +129,7 @@ def test_saved_video_can_be_rerun_with_current_code(client, monkeypatch, tmp_pat
     folder = tmp_path / "jobs" / rerun["id"]
     assert rerun["name"] == "flower-pot.mp4 - rerun"
     assert (folder / "input-video.mp4").read_bytes() == payload
-    assert json.loads((folder / "request.json").read_text(encoding="utf-8"))["focus_subject"] is True
+    assert json.loads((folder / "request.json").read_text(encoding="utf-8"))["focus_subject"] is False
 
 
 def test_saved_video_rerun_uses_fixed_high_quality_settings(client, monkeypatch, tmp_path):
@@ -151,7 +151,7 @@ def test_saved_video_rerun_uses_fixed_high_quality_settings(client, monkeypatch,
     folder = tmp_path / "jobs" / response.json()["id"]
     request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
     assert request["resolution"] == 768
-    assert request["focus_subject"] is True
+    assert request["focus_subject"] is False
 
 
 def test_completed_focused_scene_can_be_cleaned_without_retraining(client, tmp_path):

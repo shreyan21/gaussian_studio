@@ -65,13 +65,11 @@ Keep terminal open. Share complete tokenized URL only with trusted testers. Quic
 - Keep the subject roughly centered and make one continuous orbit.
 - Ordinary exposure and focus variation is tolerated, but moving petals and unseen surfaces cannot be reconstructed reliably.
 
-The application uses the fixed **High - 2000 px** profile: up to 44 sharp evenly spaced video frames, 9,500 optimization steps, and a 750,000-splat GPU budget. Automatic subject-focused training uses a soft robust residual so moving petals and background pixels do not consume the scene as easily. Four photographs are normally insufficient for a 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
+The application uses the fixed **High - 2000 px** full-scene profile: up to 44 sharp evenly spaced video frames, 9,500 optimization steps, and a 750,000-splat GPU budget. Four photographs are normally insufficient for a 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
 
 The pipeline rejects captures when fewer than eight cameras register, less than 55% of the inputs align, or the sparse model has fewer than 500 points. This is intentional: the viewer should not present disconnected noise as a successful 3D scene.
 
-Subject focus is automatic with no checkbox. The app triangulates the subject from recovered camera rays, follows its projected position in every training view, and creates classical GrabCut foreground masks without pretrained weights. Complete registered images train the 3D geometry with a soft motion-robust loss; the masks are deliberately applied only during final multi-view export, so one imperfect mask cannot shatter the reconstruction. The final filter preserves the supported subject plus a limited shell of high-confidence nearby background, while removing distant pavement, walls, foliage, and floating fragments. A geometric fallback remains available for unusually low-contrast frames.
-
-Full-scene mode now uses stricter opacity, scale, and anisotropy filtering to suppress translucent smears while preserving a density floor for real surfaces. Thin moving leaves can still duplicate because a dynamic subject violates multi-view geometry; use a windless capture whenever possible.
+Every reconstruction runs in full-scene mode. There is no central crop, foreground mask, or object-isolation filter: the complete registered views train the geometry, and foreground plus background Gaussians are exported together. Only invalid, oversized, highly elongated, or extremely transparent splats are filtered. Thin moving leaves can still duplicate because a dynamic subject violates multi-view geometry; use a windless capture whenever possible.
 
 ## RTX A1000 8 GB settings
 
