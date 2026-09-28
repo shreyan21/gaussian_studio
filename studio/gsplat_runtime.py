@@ -39,6 +39,11 @@ EXPORT_SCALE_PERCENTILE = 99.0
 EXPORT_SCENE_SCALE_RATIO = 0.05
 FOCUS_EXPORT_RADIUS_RATIO = 0.50
 FOCUS_MASK_SUPPORT_THRESHOLD = 0.72
+FOCUS_CONTEXT_RADIUS_RATIO = 0.62
+FOCUS_CONTEXT_SUBJECT_RATIO = 0.25
+FOCUS_CONTEXT_MIN_GAUSSIANS = 500
+FOCUS_CONTEXT_MAX_GAUSSIANS = 40_000
+FOCUS_CONTEXT_MIN_OPACITY = 0.12
 MIN_EXPORT_GAUSSIANS = 60_000
 MIN_EXPORT_RETENTION_RATIO = 0.18
 FOCUSED_MIN_EXPORT_GAUSSIANS = 30_000
@@ -458,6 +463,9 @@ def _select_export_indices(
     candidate = scale_keep.copy()
     focus_applied = False
     mask_focus_count = None
+    focused = None
+    context_selected = np.zeros(input_gaussians, dtype=bool)
+    context_quota = 0
     if focus is not None:
         target = np.asarray(focus["target"], dtype=np.float32)
         distance = np.linalg.norm(means - target, axis=1)
@@ -468,9 +476,35 @@ def _select_export_indices(
             mask_focused = np.asarray(subject_support) >= FOCUS_MASK_SUPPORT_THRESHOLD
             mask_focus_count = int(np.count_nonzero(candidate & mask_focused))
             focused &= mask_focused
-        if np.count_nonzero(candidate & focused) >= max(1_500, int(np.count_nonzero(candidate) * 0.03)):
+        subject_count = int(np.count_nonzero(candidate & focused))
+        if subject_count >= max(1_500, int(np.count_nonzero(candidate) * 0.03)):
             candidate &= focused
             focus_applied = True
+            # Keep a small, high-confidence shell of nearby scene context so a
+            # focused plant or product does not look pasted onto empty space.
+            # The quota and radius prevent distant walls/ground from taking
+            # over the export, while the foreground subject always dominates.
+            if subject_support is not None:
+                context_pool = (
+                    scale_keep
+                    & ~focused
+                    & (distance <= float(focus["camera_distance"] * FOCUS_CONTEXT_RADIUS_RATIO))
+                    & (opacities >= FOCUS_CONTEXT_MIN_OPACITY)
+                )
+                context_quota = min(
+                    FOCUS_CONTEXT_MAX_GAUSSIANS,
+                    max(
+                        FOCUS_CONTEXT_MIN_GAUSSIANS,
+                        int(math.ceil(subject_count * FOCUS_CONTEXT_SUBJECT_RATIO)),
+                    ),
+                )
+                eligible_context = np.flatnonzero(context_pool)
+                if len(eligible_context) > context_quota:
+                    eligible_context = eligible_context[
+                        np.argpartition(opacities[eligible_context], -context_quota)[-context_quota:]
+                    ]
+                context_selected[eligible_context] = True
+                candidate |= context_selected
     opacity_minimum = FOCUSED_MIN_EXPORT_OPACITY if focus is not None else MIN_EXPORT_OPACITY
     keep = candidate & (opacities >= opacity_minimum)
     retention_floor = 0
@@ -504,6 +538,17 @@ def _select_export_indices(
         "export_focus_radius_ratio": FOCUS_EXPORT_RADIUS_RATIO if focus is not None else None,
         "export_mask_support_threshold": FOCUS_MASK_SUPPORT_THRESHOLD if subject_support is not None else None,
         "export_mask_supported_gaussians": mask_focus_count,
+        "export_subject_gaussians": (
+            int(np.count_nonzero(focused[indices])) if focus_applied and focused is not None else None
+        ),
+        "export_context_gaussians": int(np.count_nonzero(context_selected[indices])),
+        "export_context_quota": context_quota if focus_applied and subject_support is not None else None,
+        "export_context_radius_ratio": (
+            FOCUS_CONTEXT_RADIUS_RATIO if focus_applied and subject_support is not None else None
+        ),
+        "export_context_opacity_minimum": (
+            FOCUS_CONTEXT_MIN_OPACITY if focus_applied and subject_support is not None else None
+        ),
         "export_anisotropy_limit": MAX_TRAINING_SCALE_RATIO,
     }
 
@@ -675,7 +720,7 @@ def train_gaussian_scene(
     export_stats = {}
     subject_support = None
     if focus_subject:
-        progress(92, "Removing background with multi-view foreground agreement")
+        progress(92, "Separating the subject while preserving nearby scene context")
         trained_means = splats["means"].detach().cpu().numpy().astype(np.float32)
         subject_support, support_hits, support_seen = _project_mask_support(trained_means, views)
         export_stats.update({

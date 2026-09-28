@@ -6,6 +6,7 @@ from studio.gsplat_runtime import (
     _adaptive_subject_crop_ratio,
     _clamp_log_scale_anisotropy_,
     _export_arrays,
+    _select_export_indices,
     _subject_crop_bounds,
     _training_profile,
     _viewer_quaternions,
@@ -131,3 +132,33 @@ def test_export_retention_floor_preserves_trained_subject_density():
     assert stats["export_retention_floor"] == 60_000
     assert stats["export_confident_gaussians"] == 0
     assert stats["export_valid_gaussians"] == count
+
+
+def test_focused_export_keeps_limited_nearby_context():
+    count = 8_000
+    means = np.zeros((count, 3), np.float32)
+    means[4_000:7_000, 0] = 0.55
+    means[7_000:, 0] = 0.80
+    scales = np.full((count, 3), 0.01, np.float32)
+    opacities = np.full(count, 0.80, np.float32)
+    support = np.zeros(count, np.float32)
+    support[:4_000] = 1.0
+    stats = {}
+
+    indices, focused, stats = _select_export_indices(
+        means,
+        scales,
+        opacities,
+        {"target": np.zeros(3), "camera_distance": 1.0},
+        scene_scale=1.0,
+        maximum=count,
+        subject_support=support,
+    )
+
+    assert focused is True
+    assert np.count_nonzero(indices < 4_000) == 4_000
+    assert np.count_nonzero((indices >= 4_000) & (indices < 7_000)) == 1_000
+    assert np.count_nonzero(indices >= 7_000) == 0
+    assert stats["export_subject_gaussians"] == 4_000
+    assert stats["export_context_gaussians"] == 1_000
+    assert stats["export_context_radius_ratio"] == 0.62
