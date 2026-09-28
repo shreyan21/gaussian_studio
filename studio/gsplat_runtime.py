@@ -51,8 +51,13 @@ FOCUSED_MIN_EXPORT_GAUSSIANS = 30_000
 FOCUSED_MIN_EXPORT_RETENTION_RATIO = 0.08
 FOCUS_ROBUST_RESIDUAL = 0.18
 AI_DEPTH_MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
-AI_DEPTH_LOSS_WEIGHT = 0.05
-AI_DEPTH_START_RATIO = 0.15
+AI_DEPTH_LOSS_WEIGHT = 0.08
+AI_DEPTH_START_RATIO = 0.10
+AI_DEPTH_GRADIENT_WEIGHT = 0.20
+FULL_SCENE_ROBUST_MIN_WEIGHT = 0.35
+EXPORT_COHERENCE_NEIGHBORS = 5
+EXPORT_COHERENCE_SPACING_MULTIPLIER = 12.0
+EXPORT_COHERENCE_SCALE_MULTIPLIER = 4.0
 
 
 def ai_depth_cache_dir() -> Path:
@@ -411,16 +416,42 @@ def _scale_shift_invariant_depth_loss(rendered_depth, predicted_inverse_depth, a
         variance = ((values - mean).square() * weights).sum() / weight_sum
         return (values - mean) / variance.sqrt().clamp_min(1e-4)
 
+    rendered_normalized = normalize(rendered_inverse)
+    predicted_normalized = normalize(predicted_inverse)
     residual = F.smooth_l1_loss(
-        normalize(rendered_inverse),
-        normalize(predicted_inverse),
+        rendered_normalized,
+        predicted_normalized,
         beta=0.1,
         reduction="none",
     )
     # Keep the entire calculation on the GPU. A Python-side valid-pixel count
     # would synchronize CUDA on every optimization step and noticeably slow
     # longer scenes.
-    return (residual * weights).sum() / weight_sum
+    value_loss = (residual * weights).sum() / weight_sum
+
+    # A value-only monocular loss can put the object at roughly the right
+    # depth while still leaving its surface torn. Matching local depth changes
+    # encourages continuous pot walls, tabletops, and other smooth shapes.
+    gradient_loss = rendered_depth.sum() * 0.0
+    for axis in (1, 2):
+        first = [slice(None)] * 4
+        second = [slice(None)] * 4
+        first[axis] = slice(1, None)
+        second[axis] = slice(None, -1)
+        first, second = tuple(first), tuple(second)
+        pair_weights = weights[first] * weights[second]
+        pair_sum = pair_weights.sum().clamp_min(1.0)
+        rendered_gradient = rendered_normalized[first] - rendered_normalized[second]
+        predicted_gradient = predicted_normalized[first] - predicted_normalized[second]
+        gradient_residual = F.smooth_l1_loss(
+            rendered_gradient,
+            predicted_gradient,
+            beta=0.1,
+            reduction="none",
+        )
+        gradient_loss = gradient_loss + (gradient_residual * pair_weights).sum() / pair_sum
+    gradient_loss = gradient_loss * 0.5
+    return (1.0 - AI_DEPTH_GRADIENT_WEIGHT) * value_loss + AI_DEPTH_GRADIENT_WEIGHT * gradient_loss
 
 
 def _attach_ai_depth_priors(views: list[dict], device: str, progress: Progress) -> dict:
@@ -543,6 +574,51 @@ def _viewer_quaternions(quaternions: np.ndarray) -> np.ndarray:
     return np.column_stack((-x, w, -z, y)).astype(np.float32)
 
 
+def _spatial_coherence_mask(
+    means: np.ndarray,
+    scales: np.ndarray,
+    candidate: np.ndarray,
+) -> tuple[np.ndarray, dict]:
+    """Reject only extreme isolated splats while preserving separate scene objects."""
+    coherent = np.asarray(candidate, dtype=bool).copy()
+    indices = np.flatnonzero(coherent)
+    stats = {
+        "export_coherence_evaluated": False,
+        "export_coherence_removed_gaussians": 0,
+        "export_coherence_spacing": None,
+    }
+    if len(indices) < 1_500:
+        return coherent, stats
+
+    points = np.asarray(means[indices], dtype=np.float64)
+    neighbors = min(EXPORT_COHERENCE_NEIGHBORS, len(points))
+    distances, _ = cKDTree(points).query(points, k=neighbors, workers=-1)
+    local = distances if distances.ndim == 1 else distances[:, -1]
+    finite = np.isfinite(local) & (local > 0)
+    if np.count_nonzero(finite) < max(100, int(len(indices) * 0.5)):
+        return coherent, stats
+
+    spacing = float(np.median(local[finite]))
+    scale_extent = np.max(scales[indices], axis=1)
+    limit = np.maximum(
+        spacing * EXPORT_COHERENCE_SPACING_MULTIPLIER,
+        scale_extent * EXPORT_COHERENCE_SCALE_MULTIPLIER,
+    )
+    keep_local = np.isfinite(local) & (local <= limit)
+    removed = int(np.count_nonzero(~keep_local))
+    # A malformed scale or unusual sparse scene must not let cleanup erase a
+    # substantial real surface. The guard makes this a dust/floaters filter.
+    if removed > int(len(indices) * 0.08):
+        return coherent, stats
+    coherent[indices[~keep_local]] = False
+    stats.update({
+        "export_coherence_evaluated": True,
+        "export_coherence_removed_gaussians": removed,
+        "export_coherence_spacing": round(spacing, 7),
+    })
+    return coherent, stats
+
+
 def _select_export_indices(
     means: np.ndarray,
     scales: np.ndarray,
@@ -578,7 +654,7 @@ def _select_export_indices(
         )
         scale_keep &= maximum_scale <= scale_limit
         scale_keep &= anisotropy <= MAX_TRAINING_SCALE_RATIO
-    candidate = scale_keep.copy()
+    candidate, coherence_stats = _spatial_coherence_mask(means, scales, scale_keep)
     focus_applied = False
     mask_focus_count = None
     focused = None
@@ -668,6 +744,7 @@ def _select_export_indices(
             FOCUS_CONTEXT_MIN_OPACITY if focus_applied and subject_support is not None else None
         ),
         "export_anisotropy_limit": MAX_TRAINING_SCALE_RATIO,
+        **coherence_stats,
     }
 
 
@@ -805,9 +882,10 @@ def train_gaussian_scene(
         # export-only, while this soft residual weight prevents a few moving
         # petals or background pixels from spawning large ghost structures.
         absolute_error = torch.abs(rendered - pixels)
-        if focus_subject and step >= steps // 4:
+        if step >= steps // 4:
             residual = absolute_error.detach().mean(dim=-1, keepdim=True)
-            robust_weight = 0.20 + 0.80 / (
+            minimum_weight = 0.20 if focus_subject else FULL_SCENE_ROBUST_MIN_WEIGHT
+            robust_weight = minimum_weight + (1.0 - minimum_weight) / (
                 1.0 + (residual / FOCUS_ROBUST_RESIDUAL).square()
             )
             l1 = (absolute_error * robust_weight).sum() / (
@@ -863,6 +941,7 @@ def train_gaussian_scene(
             "mask_support_views_median": round(float(np.median(support_seen)), 2),
             "mask_support_hits_median": round(float(np.median(support_hits)), 2),
         })
+    progress(92, "Removing weak floating splats and preparing the presentation view")
     gaussians, focus_applied = _export_arrays(
         splats,
         focus if focus_subject else None,
@@ -880,12 +959,13 @@ def train_gaussian_scene(
         "trained_gaussians": export_stats.get("optimized_gaussians", len(gaussians)),
         "training_image_side": profile["image_side"],
         "training_splat_budget": profile["max_splats"],
-        "recommended_splat_scale": 0.50,
+        "recommended_splat_scale": 0.85,
         "subject_focus_requested": focus_subject,
         "subject_focus_applied": focus_applied,
         "foreground_masks_used_for_training": False,
         "foreground_masks_used_for_export": bool(focus_subject),
-        "training_robust_residual_scale": FOCUS_ROBUST_RESIDUAL if focus_subject else None,
+        "training_robust_residual_scale": FOCUS_ROBUST_RESIDUAL,
+        "training_robust_minimum_weight": 0.20 if focus_subject else FULL_SCENE_ROBUST_MIN_WEIGHT,
         "training_ai_depth_loss": round(last_depth_loss or 0.0, 6),
         **ai_depth_stats,
         **load_stats,

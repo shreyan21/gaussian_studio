@@ -8,6 +8,7 @@ from studio.gsplat_runtime import (
     _export_arrays,
     _scale_shift_invariant_depth_loss,
     _select_export_indices,
+    _spatial_coherence_mask,
     _subject_crop_bounds,
     _training_profile,
     _viewer_quaternions,
@@ -195,3 +196,37 @@ def test_ai_depth_loss_penalizes_wrong_surface_order():
     )
 
     assert loss.item() > 0.5
+
+
+def test_spatial_coherence_removes_only_extreme_isolated_splats():
+    rng = np.random.default_rng(7)
+    surface = rng.normal(0, 0.01, (2_000, 3)).astype(np.float32)
+    outliers = np.array([[10, 10, 10], [-10, -10, -10]], np.float32)
+    means = np.vstack((surface, outliers))
+    scales = np.full((len(means), 3), 0.003, np.float32)
+
+    keep, stats = _spatial_coherence_mask(
+        means,
+        scales,
+        np.ones(len(means), dtype=bool),
+    )
+
+    assert np.all(keep[:2_000])
+    assert not np.any(keep[2_000:])
+    assert stats["export_coherence_evaluated"] is True
+    assert stats["export_coherence_removed_gaussians"] == 2
+
+
+def test_spatial_coherence_guard_preserves_unusually_sparse_scene():
+    means = np.arange(2_000 * 3, dtype=np.float32).reshape(2_000, 3)
+    means[::2] *= 100
+    scales = np.full((len(means), 3), 0.001, np.float32)
+
+    keep, stats = _spatial_coherence_mask(
+        means,
+        scales,
+        np.ones(len(means), dtype=bool),
+    )
+
+    assert np.all(keep)
+    assert stats["export_coherence_evaluated"] is False

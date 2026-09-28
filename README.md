@@ -19,7 +19,7 @@ The final representation is still optimized independently for each capture:
 
 If CUDA `gsplat` is unavailable, the previous PatchMatch pipeline remains as a fallback. It uses strict geometric fusion first, relaxed geometric fusion second, and photometric recovery only when necessary.
 
-The AI prior improves smooth surfaces such as pots, walls, and tabletops, but it cannot reliably invent sides absent from all photographs.
+The AI prior improves smooth surfaces such as pots, walls, and tabletops. Its value-and-gradient constraint encourages continuous surfaces, while robust video-pixel weighting and a conservative spatial-coherence export pass suppress ghost sheets and isolated floating splats. The viewer opens at a fuller 0.85 splat size to hide tiny sampling gaps; the slider remains adjustable. It still cannot reliably invent sides absent from all photographs.
 
 ## Office workstation: three commands
 
