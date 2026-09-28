@@ -28,6 +28,8 @@ from studio.gsplat_runtime import gsplat_ready
 from studio.gaussians import export_scene, make_demo, read_ply
 
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+FIXED_RESOLUTION = 768
+FIXED_FOCUS_SUBJECT = True
 
 
 def terminate_process_tree(process):
@@ -385,15 +387,13 @@ def create_app(data_dir=None):
         image: UploadFile | None = File(None),
         engine: str = Form("custom"),
         device: str = Form("auto"),
-        resolution: int = Form(512),
         depth_strength: float = Form(1.0),
         view_limit: str = Form("auto"),
-        focus_subject: bool = Form(True),
     ):
         if engine != "custom" or device not in ("auto", "cpu", "cuda"):
             raise HTTPException(422, "Invalid model or device")
-        if resolution not in (384, 512, 768) or not 0.25 <= depth_strength <= 1.5:
-            raise HTTPException(422, "Invalid quality or depth range")
+        if not 0.25 <= depth_strength <= 1.5:
+            raise HTTPException(422, "Invalid depth range")
         if view_limit not in ("auto", "all", "2", "4", "6", "8", "10", "12", "16"):
             raise HTTPException(422, "Invalid view option")
         if device == "cpu":
@@ -419,7 +419,7 @@ def create_app(data_dir=None):
                 raise HTTPException(413, f"Video must be under {MAX_VIDEO_UPLOAD // 1024**2} MB")
             if size < 1024:
                 raise HTTPException(415, "The uploaded video is empty or invalid")
-            options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": [], "video": {"file": "input-video" + suffix, "original_name": Path(upload_file.filename or "video").name[:100]}, "view_limit": view_limit, "focus_subject": focus_subject}
+            options = {"engine": engine, "device": device, "resolution": FIXED_RESOLUTION, "depth_strength": depth_strength, "inputs": [], "video": {"file": "input-video" + suffix, "original_name": Path(upload_file.filename or "video").name[:100]}, "view_limit": view_limit, "focus_subject": FIXED_FOCUS_SUBJECT}
             try:
                 return app.state.jobs.create([], [upload_file.filename or "video"], options, video_stream=upload_file.file)
             finally:
@@ -459,7 +459,7 @@ def create_app(data_dir=None):
             {"file": "input.png" if i == 0 else f"input_{i}.png", "original_name": Path(names[i].replace("\\", "/")).name[:100]}
             for i in range(len(cleaned))
         ]
-        options = {"engine": engine, "device": device, "resolution": resolution, "depth_strength": depth_strength, "inputs": inputs, "video": None, "view_limit": view_limit, "focus_subject": focus_subject}
+        options = {"engine": engine, "device": device, "resolution": FIXED_RESOLUTION, "depth_strength": depth_strength, "inputs": inputs, "video": None, "view_limit": view_limit, "focus_subject": FIXED_FOCUS_SUBJECT}
         return app.state.jobs.create(cleaned, names, options)
 
     @app.get("/api/jobs")
@@ -476,12 +476,8 @@ def create_app(data_dir=None):
         return app.state.jobs.cancel(job_id)
 
     @app.post("/api/jobs/{job_id}/retry", status_code=202)
-    def retry(
-        job_id: str,
-        resolution: int | None = Form(None),
-        focus_subject: bool | None = Form(None),
-    ):
-        return app.state.jobs.retry(job_id, resolution, focus_subject)
+    def retry(job_id: str):
+        return app.state.jobs.retry(job_id, FIXED_RESOLUTION, FIXED_FOCUS_SUBJECT)
 
     @app.post("/api/jobs/{job_id}/clean", status_code=201)
     def clean(job_id: str):

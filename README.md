@@ -65,22 +65,20 @@ Keep terminal open. Share complete tokenized URL only with trusted testers. Quic
 - Keep the subject roughly centered and make one continuous orbit.
 - Ordinary exposure and focus variation is tolerated, but moving petals and unseen surfaces cannot be reconstructed reliably.
 
-The video path extracts 28, 36, or 44 sharp evenly spaced frames for Quick, Balanced, or High quality. The corresponding 3DGS profiles use 4,800, 7,000, or 9,500 optimization steps with tighter GPU-memory splat budgets. Focused-object training uses a soft robust residual so moving petals and background pixels do not consume the scene as easily. Four photographs are normally insufficient for a 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
+The application uses the fixed **High - 2000 px** profile: up to 44 sharp evenly spaced video frames, 9,500 optimization steps, and a 750,000-splat GPU budget. Automatic subject-focused training uses a soft robust residual so moving petals and background pixels do not consume the scene as easily. Four photographs are normally insufficient for a 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
 
 The pipeline rejects captures when fewer than eight cameras register, less than 55% of the inputs align, or the sparse model has fewer than 500 points. This is intentional: the viewer should not present disconnected noise as a successful 3D scene.
 
-For a plant, pot, product, or other single object, leave **Focus on central object** enabled. The app triangulates the subject from recovered camera rays, follows its projected position in every training view, and creates classical GrabCut foreground masks without pretrained weights. Complete registered images train the 3D geometry with a soft motion-robust loss; the masks are deliberately applied only during final multi-view export, so one imperfect mask cannot shatter the reconstruction. The final filter preserves the supported subject plus a limited shell of high-confidence nearby background, while removing distant pavement, walls, foliage, and floating fragments. A geometric fallback remains available for unusually low-contrast frames. Disable focus only when the entire surrounding environment is intentionally part of the scene.
+Subject focus is automatic with no checkbox. The app triangulates the subject from recovered camera rays, follows its projected position in every training view, and creates classical GrabCut foreground masks without pretrained weights. Complete registered images train the 3D geometry with a soft motion-robust loss; the masks are deliberately applied only during final multi-view export, so one imperfect mask cannot shatter the reconstruction. The final filter preserves the supported subject plus a limited shell of high-confidence nearby background, while removing distant pavement, walls, foliage, and floating fragments. A geometric fallback remains available for unusually low-contrast frames.
 
 Full-scene mode now uses stricter opacity, scale, and anisotropy filtering to suppress translucent smears while preserving a density floor for real surfaces. Thin moving leaves can still duplicate because a dynamic subject violates multi-view geometry; use a windless capture whenever possible.
 
 ## RTX A1000 8 GB settings
 
-- Start with **Quick - 1200 px** on Kaggle or an 8 GB GPU.
-- Use **Balanced - 1600 px** only for a sharp, stationary capture when extra time is acceptable.
+- The interface always uses **High - 2000 px**.
 - Close QGIS, games, WebGL-heavy tabs, and other GPU work.
 - Try 20-30 photographs first.
-- Use **Quick - 1200 px** after CUDA out-of-memory.
-- High mode is optional and may exceed 8 GB VRAM.
+- This profile can take substantially longer and may approach the 8 GB VRAM limit.
 - Default job timeout is 120 minutes. Override with `GSS_JOB_TIMEOUT_MINUTES` if needed.
 - True 3DGS uses GPU 0. Dense fallback automatically uses every GPU reported by `nvidia-smi`; set `GSS_GPU_INDEX=0` to restrict fallback to one GPU.
 - Set `GSS_GSPLAT_STEPS` to override the quality profile's training-step count.

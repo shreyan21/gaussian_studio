@@ -71,7 +71,7 @@ def test_invalid_uploads(client, contents, code):
 
 
 def test_invalid_options(client):
-    for data in ({"engine": "unknown"}, {"resolution": 12}, {"device": "invalid"}, {"device": "cpu"}, {"view_limit": "99"}):
+    for data in ({"engine": "unknown"}, {"device": "invalid"}, {"device": "cpu"}, {"view_limit": "99"}):
         assert client.post("/api/jobs", files=views(), data=data).status_code == 422
 
 
@@ -91,7 +91,8 @@ def test_custom_multiview_saved_in_order(client, monkeypatch, tmp_path):
     request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
     assert job["image_count"] == 20
     assert request["engine"] == "custom"
-    assert request["resolution"] == 512
+    assert request["resolution"] == 768
+    assert request["focus_subject"] is True
     assert [item["original_name"] for item in request["inputs"]] == [f"view-{i:02d}.png" for i in range(20)]
 
 
@@ -109,7 +110,7 @@ def test_custom_accepts_video_as_single_source(client, monkeypatch, tmp_path):
     request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
     assert request["video"]["file"] == "input-video.mp4"
     assert request["inputs"] == []
-    assert request["focus_subject"] is False
+    assert request["focus_subject"] is True
     assert (folder / "input-video.mp4").read_bytes() == payload
 
 
@@ -131,7 +132,7 @@ def test_saved_video_can_be_rerun_with_current_code(client, monkeypatch, tmp_pat
     assert json.loads((folder / "request.json").read_text(encoding="utf-8"))["focus_subject"] is True
 
 
-def test_saved_video_rerun_uses_current_ui_settings(client, monkeypatch, tmp_path):
+def test_saved_video_rerun_uses_fixed_high_quality_settings(client, monkeypatch, tmp_path):
     monkeypatch.setattr(Jobs, "run", lambda *args: None)
     payload = b"\x00\x00\x00\x18ftypmp42" + b"0" * 2048
     original = client.post(
@@ -149,7 +150,7 @@ def test_saved_video_rerun_uses_current_ui_settings(client, monkeypatch, tmp_pat
     assert response.status_code == 202
     folder = tmp_path / "jobs" / response.json()["id"]
     request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
-    assert request["resolution"] == 384
+    assert request["resolution"] == 768
     assert request["focus_subject"] is True
 
 
