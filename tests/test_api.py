@@ -32,10 +32,11 @@ def test_home_and_procedural_viewer_without_external_engine(client):
     assert client.get("/static/renderer.js").status_code == 200
     health = client.get("/api/health").json()
     assert health["app"] == "Gaussian Scene Studio"
-    assert health["version"] == "4.0.0"
+    assert health["version"] == "4.1.0"
     assert health["max_images"] == 80
     assert health["video_chunk_mb"] == 8
-    assert set(health["engines"]) == {"custom", "gsplat"}
+    assert set(health["engines"]) == {"custom", "gsplat", "single_photo"}
+    assert health["single_photo_model"] == "depth-anything/Depth-Anything-V2-Small-hf"
     assert client.get("/api/demo/scene.gsb").content[:4] == b"GSS1"
     assert client.get("/api/demo/scene.json").json()["method"] == "demo"
 
@@ -97,7 +98,19 @@ def test_custom_multiview_saved_in_order(client, monkeypatch, tmp_path):
     assert [item["original_name"] for item in request["inputs"]] == [f"view-{i:02d}.png" for i in range(20)]
 
 
-def test_custom_requires_twelve_views(client):
+def test_custom_accepts_one_photo_or_requires_twelve_multiview_photos(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(Jobs, "run", lambda *args: None)
+    response = client.post(
+        "/api/jobs",
+        files={"images": ("portrait.png", photo(), "image/png")},
+    )
+    assert response.status_code == 202
+    job = response.json()
+    assert job["source_type"] == "single-photo"
+    request = json.loads((tmp_path / "jobs" / job["id"] / "request.json").read_text(encoding="utf-8"))
+    assert len(request["inputs"]) == 1
+
+    client.app.state.jobs.active = None
     assert client.post("/api/jobs", files=views(11)).status_code == 422
     assert client.post("/api/jobs", files=views(12), data={"device": "cpu"}).status_code == 422
 

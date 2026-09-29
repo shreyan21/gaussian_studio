@@ -66,6 +66,19 @@ def ai_depth_cache_dir() -> Path:
     return path
 
 
+def ai_depth_ready() -> bool:
+    if os.environ.get("GSS_DISABLE_AI_DEPTH", "").strip() == "1":
+        return False
+    if any(importlib.util.find_spec(package) is None for package in ("torch", "transformers")):
+        return False
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
 def gsplat_ready() -> bool:
     if os.environ.get("GSS_DISABLE_GSPLAT", "").strip() == "1":
         return False

@@ -1,4 +1,4 @@
-"""One pretrained-free reconstruction process per job."""
+"""One isolated reconstruction process per job."""
 import gc
 import json
 import os
@@ -11,6 +11,7 @@ from PIL import Image
 
 from studio.custom_sfm import extract_video_frames, reconstruct
 from studio.gaussians import export_scene
+from studio.single_image import reconstruct_single_image
 
 
 def progress(directory, percent, message):
@@ -40,14 +41,25 @@ def main():
         else:
             paths = [directory / item["file"] for item in options["inputs"]]
             source_type = "photos"
-        gaussians, meta = reconstruct(
-            directory,
-            paths,
-            options["resolution"],
-            options["device"] != "cpu",
-            lambda percent, message: progress(directory, percent, message),
-            options.get("focus_subject", True),
-        )
+        report = lambda percent, message: progress(directory, percent, message)
+        if not video and len(paths) == 1:
+            gaussians, meta = reconstruct_single_image(
+                paths[0],
+                options["resolution"],
+                options["device"] != "cpu",
+                options.get("depth_strength", 1.0),
+                report,
+            )
+            source_type = "single-photo"
+        else:
+            gaussians, meta = reconstruct(
+                directory,
+                paths,
+                options["resolution"],
+                options["device"] != "cpu",
+                report,
+                options.get("focus_subject", True),
+            )
         meta["source_type"] = source_type
         meta["uploaded_count"] = 1 if video else len(paths)
         progress(directory, 94, "Writing Gaussian PLY and browser scene")

@@ -24,7 +24,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from studio.config import DATA, MAX_IMAGES, MAX_PIXELS, MAX_TOTAL_UPLOAD, MAX_UPLOAD, MAX_VIDEO_UPLOAD, ROOT
 from studio.custom_sfm import engine_ready
-from studio.gsplat_runtime import gsplat_ready
+from studio.gsplat_runtime import AI_DEPTH_MODEL_ID, ai_depth_ready, gsplat_ready
 from studio.gaussians import export_scene, make_demo, read_ply
 
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
@@ -121,7 +121,8 @@ class Jobs:
             atomic_json(path / "request.json", options)
             first_name = Path(filenames[0].replace("\\", "/")).name[:100]
             name = first_name if video_stream is not None or len(images) == 1 else f"{first_name} + {len(images)-1} views"
-            job = {"id": job_id, "name": name, "created": datetime.now(timezone.utc).isoformat(), "status": "running", "progress": 0, "message": "Starting reconstruction", "engine": options["engine"], "image_count": 1 if video_stream is not None else len(images), "source_type": "video" if video_stream is not None else "photos"}
+            source_type = "video" if video_stream is not None else "single-photo" if len(images) == 1 else "photos"
+            job = {"id": job_id, "name": name, "created": datetime.now(timezone.utc).isoformat(), "status": "running", "progress": 0, "message": "Starting reconstruction", "engine": options["engine"], "image_count": 1 if video_stream is not None else len(images), "source_type": source_type}
             atomic_json(path / "job.json", job)
             self.active = job_id
             threading.Thread(target=self.run, args=(job_id,), daemon=True).start()
@@ -392,7 +393,8 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        return {"app": "Gaussian Scene Studio", "version": "4.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready(), "gsplat": gsplat_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": CHUNKED_VIDEO_UPLOAD_LIMIT // 1024**2, "video_chunk_mb": VIDEO_UPLOAD_CHUNK // 1024**2, "remote_access": bool(access_token)}
+        single_photo_ready = ai_depth_ready()
+        return {"app": "Gaussian Scene Studio", "version": "4.1.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready(), "gsplat": gsplat_ready(), "single_photo": single_photo_ready}, "single_photo_model": AI_DEPTH_MODEL_ID, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": CHUNKED_VIDEO_UPLOAD_LIMIT // 1024**2, "video_chunk_mb": VIDEO_UPLOAD_CHUNK // 1024**2, "remote_access": bool(access_token)}
 
     @app.post("/api/video-uploads", status_code=201)
     def start_video_upload(
@@ -499,7 +501,7 @@ def create_app(data_dir=None):
         if image is not None:
             uploads.insert(0, image)
         if not uploads:
-            raise HTTPException(422, "Upload one video or at least 12 overlapping photos")
+            raise HTTPException(422, "Upload one photo, one video, or at least 12 overlapping photos")
         video_extensions = {".mp4", ".mov", ".m4v", ".webm"}
         video_uploads = [item for item in uploads if (item.content_type or "").startswith("video/") or Path(item.filename or "").suffix.lower() in video_extensions]
         if video_uploads:
@@ -523,8 +525,8 @@ def create_app(data_dir=None):
                 await upload_file.close()
         if len(uploads) > MAX_IMAGES:
             raise HTTPException(422, f"Upload at most {MAX_IMAGES} images")
-        if len(uploads) < 12:
-            raise HTTPException(422, "Custom reconstruction needs at least 12 overlapping photographs, or upload one video")
+        if 1 < len(uploads) < 12:
+            raise HTTPException(422, "Upload one photo for a limited-angle preview, or at least 12 overlapping photos for measured 3D")
 
         cleaned, names = [], []
         for upload_file in uploads:
