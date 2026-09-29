@@ -7,8 +7,7 @@ No SHARP, AnySplat, or hosted inference API is used. The single-image path runs 
 ## One photograph: TripoSplat
 
 - A single JPEG, PNG, or WebP automatically selects TripoSplat.
-- The model removes the background for object generation and produces up to 65,536 object Gaussians on an 8 GB GPU, 131,072 on a 10-19 GB GPU, or 262,144 on a 20+ GB GPU. The app then adds a masked, slightly blurred source-photo backdrop behind the object for visual context.
-- Because a single photograph cannot reconstruct the background in 3D, the backdrop is explicitly labelled as shallow and the viewer limits rotation to useful angles.
+- The model removes the background and generates a foreground object with up to 65,536 Gaussians on an 8 GB GPU, 131,072 on a 10-19 GB GPU, or 262,144 on a 20+ GB GPU.
 - The app loads TripoSplat stages sequentially and clears CUDA memory between them to reduce peak VRAM use.
 - Rotation is limited to a broad 145-degree yaw and 55-degree pitch around the source view. This exposes useful 3D while avoiding an unrestricted underside view.
 - Hidden sides are plausible AI predictions. They are not measurements and may be wrong.
@@ -83,7 +82,7 @@ The application uses the fixed **High - 2000 px** full-scene profile: up to 44 s
 
 The pipeline rejects captures when fewer than eight cameras register, less than 55% of the inputs align, or the sparse model has fewer than 500 points. This is intentional: the viewer should not present disconnected noise as a successful 3D scene.
 
-Every multi-view reconstruction runs in full-scene mode. There is no central crop, foreground mask, or object-isolation filter: the complete registered views train the geometry, and foreground plus background Gaussians are exported together. Only invalid, oversized, highly elongated, or extremely transparent splats are filtered. Thin moving leaves can still duplicate because a dynamic subject violates multi-view geometry; use a windless capture whenever possible. The separate one-photo TripoSplat path generates an isolated 3D foreground object and places a masked 2D source-photo backdrop behind it; that backdrop provides context but is not reconstructed geometry.
+Every multi-view reconstruction runs in full-scene mode. There is no central crop, foreground mask, or object-isolation filter: the complete registered views train the geometry, and foreground plus background Gaussians are exported together. Only invalid, oversized, highly elongated, or extremely transparent splats are filtered. Thin moving leaves can still duplicate because a dynamic subject violates multi-view geometry; use a windless capture whenever possible. The separate one-photo TripoSplat path always isolates a foreground object.
 
 ## RTX A1000 8 GB settings
 
