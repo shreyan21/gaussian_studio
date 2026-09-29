@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 
 from studio import worker
-from studio.triposplat_runtime import CHECKPOINT_FILES, TRIPOSPLAT_VIEWER_TRANSFORM, triposplat_status
+from studio.triposplat_runtime import CHECKPOINT_FILES, TRIPOSPLAT_VIEWER_TRANSFORM, _aligned_source_backdrop, _source_background_gaussians, triposplat_status
 
 
 def test_triposplat_status_explains_missing_install(monkeypatch, tmp_path):
@@ -26,6 +26,25 @@ def test_viewer_transform_is_upright_and_preserves_handedness():
     np.testing.assert_allclose(transform @ [1, 0, 0], [0, 0, 1])
     np.testing.assert_allclose(transform @ transform.T, np.eye(3))
     assert np.linalg.det(transform) == 1
+
+
+def test_source_backdrop_is_masked_and_placed_behind_object():
+    source = Image.new("RGB", (80, 60), (30, 120, 210))
+    isolated = Image.new("RGBA", source.size, (0, 0, 0, 0))
+    isolated.paste((220, 50, 80, 255), (25, 10, 55, 50))
+    backdrop, foreground, coverage = _aligned_source_backdrop(source, isolated, size=128)
+    subject = np.zeros((100, 16), np.float32)
+    subject[:, :3] = np.random.default_rng(4).uniform((-0.5, -0.5, -0.2), (0.5, 0.5, 0.2), (100, 3))
+    subject[:, 3], subject[:, 4:7], subject[:, 8] = 0.8, 0.01, 1
+    background = _source_background_gaussians(backdrop, foreground, coverage, subject, grid_size=32)
+
+    assert 100 < len(background) < 32 * 32
+    assert np.all(background[:, 2] < np.percentile(subject[:, 2], 2))
+    np.testing.assert_allclose(
+        background[:, 12:15],
+        np.tile(np.array([30, 120, 210]) / 255, (len(background), 1)),
+        atol=0.08,
+    )
 
 
 def test_worker_exports_mocked_single_image_generation(monkeypatch, tmp_path):

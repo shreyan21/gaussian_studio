@@ -13,7 +13,7 @@
   <select id="engine" disabled aria-label="Automatically selected reconstruction engine"><option value="custom">COLMAP + AI-guided 3DGS (multi-view)</option><option value="triposplat">TripoSplat AI object (one photo)</option></select>
   <p class="field-note">The engine switches automatically: one photo generates an object and invents unseen surfaces; multiple views reconstruct visible geometry.</p>
   <div class="field-row"><div><label for="device">Compute</label><select id="device"><option value="auto">NVIDIA CUDA (auto)</option><option value="cuda">NVIDIA CUDA</option></select></div><div><label>Detail</label><p class="field-note">High · 2000 px</p></div></div>
-  <p class="field-note">Multi-view reconstruction stays fixed at 2000 px and retains the registered background. TripoSplat isolates the foreground object because a single photo cannot measure a complete scene.</p>
+  <p class="field-note">Multi-view reconstruction stays fixed at 2000 px and reconstructs registered background. TripoSplat generates the object and retains the surrounding source image as a shallow backdrop.</p>
   <button id="generateBtn" class="primary" type="submit" disabled>Create 3D scene <span aria-hidden="true">↗</span></button>
  </form>
  <section id="progressPanel" class="progress-panel" hidden aria-live="polite"><div class="progress-heading"><strong>Reconstructing</strong><span id="progressPercent">0%</span></div><progress id="progressBar" max="100" value="0"></progress><p id="progressMessage"></p><button id="cancelBtn" class="quiet danger">Cancel reconstruction</button></section>
