@@ -28,6 +28,16 @@ CHECKPOINT_FILES = {
     "rmbg": "background_removal/birefnet.safetensors",
 }
 
+# TripoSplat's exported PLY still needs the two rotations used by its official
+# Spark viewer (Y +90 degrees, then X 180 degrees).  Folding those rotations
+# into the export gives this app's +Y-up, camera-on-+Z viewer an upright source
+# view instead of displaying the generated object inverted.
+TRIPOSPLAT_VIEWER_TRANSFORM = [
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0],
+    [1.0, 0.0, 0.0],
+]
+
 
 def triposplat_root() -> Path:
     return Path(os.environ.get("GSS_TRIPOSPLAT_ROOT", ROOT / "tools" / "TripoSplat")).resolve()
@@ -145,7 +155,7 @@ def generate_single_image(directory: Path, image_path: Path, progress) -> tuple[
         progress(80, f"Decoding {count:,} learned 3D Gaussians")
         decoder = upstream.load_decoder(paths["decoder"], device=device, dtype=torch.float16)
         gaussian = decoder.decode(latent.to(device), num_gaussians=count)
-        gaussian.save_ply(raw_ply)
+        gaussian.save_ply(raw_ply, transform=TRIPOSPLAT_VIEWER_TRANSFORM)
         del gaussian, decoder, latent
         _release_cuda(torch)
 

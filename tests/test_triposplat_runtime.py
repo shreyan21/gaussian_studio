@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 
 from studio import worker
-from studio.triposplat_runtime import CHECKPOINT_FILES, triposplat_status
+from studio.triposplat_runtime import CHECKPOINT_FILES, TRIPOSPLAT_VIEWER_TRANSFORM, triposplat_status
 
 
 def test_triposplat_status_explains_missing_install(monkeypatch, tmp_path):
@@ -17,6 +17,15 @@ def test_triposplat_status_explains_missing_install(monkeypatch, tmp_path):
 def test_checkpoint_inventory_is_complete():
     assert set(CHECKPOINT_FILES) == {"flow", "decoder", "dinov3", "vae", "rmbg"}
     assert all(name.endswith(".safetensors") for name in CHECKPOINT_FILES.values())
+
+
+def test_viewer_transform_is_upright_and_preserves_handedness():
+    transform = np.asarray(TRIPOSPLAT_VIEWER_TRANSFORM)
+
+    np.testing.assert_allclose(transform @ [0, 0, 1], [0, 1, 0])
+    np.testing.assert_allclose(transform @ [1, 0, 0], [0, 0, 1])
+    np.testing.assert_allclose(transform @ transform.T, np.eye(3))
+    assert np.linalg.det(transform) == 1
 
 
 def test_worker_exports_mocked_single_image_generation(monkeypatch, tmp_path):
