@@ -12,8 +12,7 @@
 - Official project: https://github.com/DepthAnything/Depth-Anything-V2
 - Checkpoint: `depth-anything/Depth-Anything-V2-Small-hf` (24.8M parameters, approximately 100 MB).
 - Licence: Apache-2.0. The Base, Large, and Giant variants are not used because their official licence is CC-BY-NC-4.0.
-- Purpose in multi-view mode: predicts relative inverse depth for a soft, per-view scale/shift-invariant 3DGS training loss. It does not replace COLMAP cameras there.
-- Purpose in single-photo mode: supplies the estimated relative depth used to build an explicitly labelled, limited-angle 2.5D Gaussian relief. Hidden geometry is not presented as measured reconstruction.
+- Purpose: predicts relative inverse depth for a soft, per-view scale/shift-invariant 3DGS training loss. It does not replace COLMAP cameras or directly generate the exported scene.
 - The checkpoint is downloaded from Hugging Face during setup/first use and cached locally.
 - Preserve Apache-2.0 licence and attribution notices when redistributing the checkpoint.
 

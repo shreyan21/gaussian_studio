@@ -1,12 +1,8 @@
 # Gaussian Scene Studio 4
 
-Hybrid photo-to-3D reconstruction for local NVIDIA workstations. One photograph creates an explicitly labelled, limited-angle AI depth preview. One ordinary slow orbit video or 12-80 ordered overlapping photographs creates a measured multi-view scene: the app selects sharp keyframes, estimates camera poses, predicts a lightweight depth prior for smooth surfaces, trains a true 3D Gaussian scene, and opens an interactive browser viewer.
+Hybrid multi-view reconstruction for local NVIDIA workstations. Upload one ordinary slow orbit video or ordered overlapping photographs; the app selects sharp keyframes, estimates camera poses, predicts a lightweight depth prior for smooth surfaces, trains a true 3D Gaussian scene from the registered views, and opens an interactive browser viewer.
 
-## Single-photo mode
-
-Upload exactly one photograph to create a 768 px perspective Gaussian depth relief with Depth Anything V2 Small. Edge-aware depth smoothing removes small noisy ripples, camera-facing boundary splats prevent black tears around petals and leaves, and the viewer background follows the photograph's border colour. Rotation limits adapt from ±8-18 degrees horizontally and ±6-12 degrees vertically based on depth complexity; auto-orbit reverses at those limits and side/back/top presets remain disabled. The splat-size slider is restricted to 0.8-1.25× in this mode to prevent excessive blur. It is a 2.5D AI preview, not a measured complete reconstruction; video or 12-80 overlapping photographs still use the full 2000 px COLMAP + 3DGS pipeline.
-
-No SHARP, AnySplat, or cloud inference is used. In multi-view mode, Depth Anything V2 Small supplies only a soft relative-depth constraint while COLMAP cameras and uploaded pixels remain authoritative. In single-photo mode, its estimated depth creates the explicitly labelled 2.5D relief, so that result is predictive rather than measured.
+No SHARP, AnySplat, or cloud inference is used. Depth Anything V2 Small supplies only a soft relative-depth constraint; COLMAP cameras and the uploaded pixels remain authoritative.
 
 Dense fusion now retries weak results automatically: strict geometric consistency first, relaxed geometric fusion second, and a photometric recovery pass only when necessary. This avoids discarding otherwise usable small-object captures at the very end of a run.
 
@@ -66,7 +62,7 @@ Keep terminal open. Share complete tokenized URL only with trusted testers. Quic
 
 ## Capture behavior
 
-- Use one photograph for a limited-angle AI preview, or use one 20-60 second video / 12-80 ordered photos for measured multi-view 3D (20-40 photos recommended).
+- Use one 20-60 second video, or 12-80 ordered photos (20-40 photos recommended).
 - Keep object and background completely stationary. Move only camera.
 - Walk one slow, smooth circle, then an optional slightly higher ring. Do not rotate the object.
 - Keep the subject roughly centered and make one continuous orbit.
