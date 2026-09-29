@@ -77,7 +77,10 @@ def reconstruct_single_image(
         "ai_depth_prior": AI_DEPTH_MODEL_ID,
         "single_image_preview": True,
         "recommended_splat_scale": 1.0,
-        "view_limits": {"yaw_degrees": 22, "pitch_degrees": 14},
+        "view_limits": {
+            "yaw_degrees": camera["safe_yaw_degrees"],
+            "pitch_degrees": camera["safe_pitch_degrees"],
+        },
         "source_camera": [0, 0, 0],
         "subject_focus_requested": False,
         "subject_focus_applied": False,

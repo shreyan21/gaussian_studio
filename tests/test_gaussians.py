@@ -31,6 +31,28 @@ def test_depth_is_perspective_3d_with_correct_axes():
     assert (g[:,6] < g[:,4]).all()  # anisotropic, not point sprites
     np.testing.assert_allclose(np.linalg.norm(g[:,8:12],axis=1),1,atol=1e-6)
     assert 10 < camera["fov_y"] < 100
+    assert 8 <= camera["safe_yaw_degrees"] <= 18
+    assert 6 <= camera["safe_pitch_degrees"] <= 12
+    assert len(camera["background_color"]) == 3
+
+
+def test_depth_discontinuity_splats_face_camera_without_shrinking():
+    image = Image.new("RGB", (64, 48), (120, 180, 220))
+    disparity = np.full((48, 64), 0.2, np.float32)
+    disparity[:, 32:] = 1.0
+
+    g, _, camera = from_depth(image, disparity)
+    grid = g.reshape(48, 64, 16)
+
+    # Quaternion identity means the surfel normal remains +Z at the sharp
+    # foreground/background boundary instead of becoming an edge-on black gap.
+    boundary = grid[:, 30:34]
+    np.testing.assert_allclose(boundary[:, :, 8], 1.0, atol=1e-5)
+    np.testing.assert_allclose(boundary[:, :, 9:12], 0.0, atol=1e-5)
+    boundary_coverage = boundary[:, :, 4] / np.abs(boundary[:, :, 2])
+    surface_coverage = grid[:, :20, 4] / np.abs(grid[:, :20, 2])
+    assert np.median(boundary_coverage) > np.median(surface_coverage)
+    assert camera["depth_edge_ratio"] > 0
 
 
 def test_constant_depth_and_degenerate_normals_are_finite():

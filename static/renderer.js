@@ -83,7 +83,10 @@ export class GaussianViewer {
         const count = header.getUint32(4, true);
         if (count < 1 || count > 1500000 || buffer.byteLength !== 16 + count * 64) throw Error('The Gaussian scene download is incomplete or too large.');
         this.count = count; this.meta = meta; this.scale = Number(meta?.recommended_splat_scale || 1);
-        const sizeControl = document.getElementById('splatSize'); if (sizeControl) sizeControl.valueAsNumber = this.scale;
+        const singlePhoto = meta?.representation === 'single-image-depth-splat';
+        const sizeControl = document.getElementById('splatSize'); if (sizeControl) { sizeControl.min = singlePhoto ? '0.8' : '0.5'; sizeControl.max = singlePhoto ? '1.25' : '2'; sizeControl.valueAsNumber = this.scale; }
+        const background = Array.isArray(meta?.background_color) && meta.background_color.length === 3 ? meta.background_color : [0.045, 0.072, 0.115];
+        this.gl.clearColor(Math.max(0,Math.min(1,background[0])),Math.max(0,Math.min(1,background[1])),Math.max(0,Math.min(1,background[2])),1);
         const g = new Float32Array(buffer, 16), gl = this.gl, w = 1024, h = Math.ceil(count * 4 / w), data = new Float32Array(w * h * 4); data.set(g);
         gl.bindTexture(gl.TEXTURE_2D, this.texture); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, data);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.indices); gl.bufferData(gl.ARRAY_BUFFER, Uint32Array.from({ length: count }, (_, i) => i), gl.DYNAMIC_DRAW);

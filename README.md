@@ -4,7 +4,7 @@ Hybrid photo-to-3D reconstruction for local NVIDIA workstations. One photograph 
 
 ## Single-photo mode
 
-Upload exactly one photograph to create a 768 px perspective Gaussian depth relief with Depth Anything V2 Small. The viewer limits yaw to 22 degrees and pitch to 14 degrees, reverses auto-orbit at those limits, and disables side/back/top presets. This prevents the user from rotating far enough to expose the unobserved back or heavily stretched edges. It is a 2.5D AI preview, not a measured complete reconstruction; video or 12-80 overlapping photographs still use the full 2000 px COLMAP + 3DGS pipeline.
+Upload exactly one photograph to create a 768 px perspective Gaussian depth relief with Depth Anything V2 Small. Edge-aware depth smoothing removes small noisy ripples, camera-facing boundary splats prevent black tears around petals and leaves, and the viewer background follows the photograph's border colour. Rotation limits adapt from ±8-18 degrees horizontally and ±6-12 degrees vertically based on depth complexity; auto-orbit reverses at those limits and side/back/top presets remain disabled. The splat-size slider is restricted to 0.8-1.25× in this mode to prevent excessive blur. It is a 2.5D AI preview, not a measured complete reconstruction; video or 12-80 overlapping photographs still use the full 2000 px COLMAP + 3DGS pipeline.
 
 No SHARP, AnySplat, or cloud inference is used. In multi-view mode, Depth Anything V2 Small supplies only a soft relative-depth constraint while COLMAP cameras and uploaded pixels remain authoritative. In single-photo mode, its estimated depth creates the explicitly labelled 2.5D relief, so that result is predictive rather than measured.
 

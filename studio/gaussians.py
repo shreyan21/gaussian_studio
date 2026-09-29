@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from plyfile import PlyData, PlyElement
+from scipy.ndimage import binary_dilation, gaussian_filter
 from scipy.spatial import cKDTree
 
 SH_C0 = 0.28209479177387814
@@ -46,6 +47,20 @@ def from_depth(image: Image.Image, disparity, max_side=512, depth_strength=1.0):
         raise ValueError("Depth prediction contains non-finite values.")
     lo, hi = np.percentile(d, [2, 98])
     d = np.clip((d - lo) / max(float(hi - lo), 1e-6), 0, 1)
+    # Monocular depth contains small pixel-scale ripples that turn into fuzzy,
+    # overlapping surfels when the camera moves. Smooth within surfaces while
+    # retaining genuine object boundaries from the original prediction.
+    preliminary_z = 1 / (0.35 + 0.65 * d)
+    preliminary_z = 2 + (preliminary_z - np.median(preliminary_z)) * depth_strength
+    preliminary_pixel = np.maximum(preliminary_z, 0.3) / max(w, h) / 0.85
+    preliminary_edge = np.maximum(
+        abs(np.gradient(preliminary_z, axis=0)),
+        abs(np.gradient(preliminary_z, axis=1)),
+    )
+    strong_boundary = preliminary_edge > 4.0 * preliminary_pixel
+    boundary_band = binary_dilation(strong_boundary, iterations=1)
+    smoothed = gaussian_filter(d, sigma=0.85, mode="nearest")
+    d = np.where(boundary_band, d, smoothed)
     z = 1 / (0.35 + 0.65 * d)
     z = 2 + (z - np.median(z)) * depth_strength
     z = np.maximum(z, 0.3)
@@ -55,18 +70,43 @@ def from_depth(image: Image.Image, disparity, max_side=512, depth_strength=1.0):
     dx, dy = np.gradient(xyz, axis=1), -np.gradient(xyz, axis=0)
     normal = np.cross(dx, dy)
     normal /= np.maximum(np.linalg.norm(normal, axis=-1, keepdims=True), 1e-8)
+    edge = np.maximum(abs(np.gradient(z, axis=0)), abs(np.gradient(z, axis=1)))
+    pixel = z / focal
+    edge_mask = binary_dilation(edge > 4.0 * pixel, iterations=1)
+    # A depth discontinuity is a foreground/background boundary, not a steep
+    # physical ramp. Raw finite differences make those splats nearly edge-on,
+    # producing the black torn outlines visible around petals. Keep boundary
+    # splats facing the source camera so they remain opaque while orbiting.
+    normal[edge_mask] = np.array([0, 0, 1], dtype=np.float32)
     # Rotation taking +Z to the surface normal.
     q = np.stack((1 + normal[..., 2], -normal[..., 1], normal[..., 0], np.zeros_like(z)), axis=-1)
     qnorm = np.linalg.norm(q, axis=-1, keepdims=True)
     q = np.where(qnorm > 1e-6, q / np.maximum(qnorm, 1e-6), np.array([0, 1, 0, 0]))
-    edge = np.maximum(abs(np.gradient(z, axis=0)), abs(np.gradient(z, axis=1)))
-    pixel = z / focal
-    scale = pixel * 0.75 * np.where(edge > 5 * pixel, 0.55, 1)
+    scale = pixel * np.where(edge_mask, 0.98, 0.86)
     g = np.zeros((w * h, 16), dtype=np.float32)
     g[:, :3], g[:, 3] = xyz.reshape(-1, 3), 0.96
     g[:, 4:7] = np.stack((scale, scale, scale * 0.22), axis=-1).reshape(-1, 3)
     g[:, 8:12], g[:, 12:15] = q.reshape(-1, 4), rgb.reshape(-1, 3)
-    return validate(g), Image.fromarray(np.uint8(d * 255)), {"fov_y": float(np.degrees(2 * np.arctan(h / (2 * focal)))), "image_size": [w, h]}
+    border_width = max(1, min(w, h) // 24)
+    border_pixels = np.concatenate((
+        rgb[:border_width].reshape(-1, 3),
+        rgb[-border_width:].reshape(-1, 3),
+        rgb[:, :border_width].reshape(-1, 3),
+        rgb[:, -border_width:].reshape(-1, 3),
+    ))
+    edge_ratio = float(edge_mask.mean())
+    # Complex layered subjects need a narrower orbit because one image contains
+    # no information with which to fill large disocclusions behind foregrounds.
+    safe_yaw = float(np.clip(18.0 - 80.0 * edge_ratio, 8.0, 18.0))
+    safe_pitch = float(np.clip(safe_yaw * 0.68, 6.0, 12.0))
+    return validate(g), Image.fromarray(np.uint8(d * 255)), {
+        "fov_y": float(np.degrees(2 * np.arctan(h / (2 * focal)))),
+        "image_size": [w, h],
+        "depth_edge_ratio": round(edge_ratio, 4),
+        "safe_yaw_degrees": round(safe_yaw, 1),
+        "safe_pitch_degrees": round(safe_pitch, 1),
+        "background_color": np.median(border_pixels, axis=0).round(4).tolist(),
+    }
 
 
 def write_ply(path, g):

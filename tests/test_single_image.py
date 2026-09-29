@@ -23,7 +23,9 @@ def test_single_photo_builds_limited_angle_depth_scene(tmp_path, monkeypatch):
 
     assert len(gaussians) == 64 * 48
     assert metadata["representation"] == "single-image-depth-splat"
-    assert metadata["view_limits"] == {"yaw_degrees": 22, "pitch_degrees": 14}
+    assert 8 <= metadata["view_limits"]["yaw_degrees"] <= 18
+    assert 6 <= metadata["view_limits"]["pitch_degrees"] <= 12
+    assert len(metadata["background_color"]) == 3
     assert metadata["single_image_preview"] is True
     assert (tmp_path / "depth.png").is_file()
     assert messages[-1][0] == 72
