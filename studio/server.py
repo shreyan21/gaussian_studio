@@ -510,7 +510,7 @@ def create_app(data_dir=None):
         if image is not None:
             uploads.insert(0, image)
         if not uploads:
-            raise HTTPException(422, "Upload one photograph, one video, or at least 12 overlapping photos")
+            raise HTTPException(422, "Upload one photograph, one video, or at least 2 overlapping photos")
         video_extensions = {".mp4", ".mov", ".m4v", ".webm"}
         video_uploads = [item for item in uploads if (item.content_type or "").startswith("video/") or Path(item.filename or "").suffix.lower() in video_extensions]
         if video_uploads:
@@ -540,8 +540,8 @@ def create_app(data_dir=None):
             engine = "triposplat" if len(uploads) == 1 else "custom"
         if engine == "triposplat" and len(uploads) != 1:
             raise HTTPException(422, "TripoSplat needs exactly one photograph")
-        if engine == "custom" and len(uploads) < 12:
-            raise HTTPException(422, "Use exactly one photograph for AI generation, or at least 12 overlapping photographs for measured reconstruction")
+        if engine == "custom" and len(uploads) < 2:
+            raise HTTPException(422, "Use exactly one photograph for AI generation, or at least 2 overlapping photographs for measured reconstruction")
         cleaned, names = [], []
         for upload_file in uploads:
             payload = await upload_file.read(MAX_UPLOAD+1)

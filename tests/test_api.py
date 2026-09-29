@@ -97,9 +97,19 @@ def test_custom_multiview_saved_in_order(client, monkeypatch, tmp_path):
     assert [item["original_name"] for item in request["inputs"]] == [f"view-{i:02d}.png" for i in range(20)]
 
 
-def test_custom_requires_twelve_views(client):
-    assert client.post("/api/jobs", files=views(11)).status_code == 422
-    assert client.post("/api/jobs", files=views(12), data={"device": "cpu"}).status_code == 422
+def test_two_photos_automatically_select_colmap(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(Jobs, "run", lambda *args: None)
+    response = client.post("/api/jobs", files=views(2))
+    assert response.status_code == 202
+    job = response.json()
+    request = json.loads((tmp_path / "jobs" / job["id"] / "request.json").read_text(encoding="utf-8"))
+    assert job["engine"] == "custom"
+    assert request["engine"] == "custom"
+
+
+def test_custom_rejects_one_photo_and_cpu(client):
+    assert client.post("/api/jobs", files=views(1), data={"engine": "custom"}).status_code == 422
+    assert client.post("/api/jobs", files=views(2), data={"device": "cpu"}).status_code == 422
 
 
 def test_single_photo_selects_triposplat(client, monkeypatch, tmp_path):

@@ -25,7 +25,8 @@ from studio.config import COLMAP_ROOT
 from studio.gaussians import validate
 
 Progress = Callable[[int, str], None]
-MIN_IMAGES = 12
+MIN_IMAGES = 2
+MIN_VIDEO_FRAMES = 12
 MAX_VIDEO_FRAMES = 80
 DENSE_TARGET_POINTS = 10_000
 DENSE_MINIMUM_POINTS = 2_000
@@ -263,7 +264,7 @@ def extract_video_frames(video_path: Path, output: Path, max_frames: int = MAX_V
     if result.returncode:
         raise RuntimeError("Video decoding failed. Upload a standard MP4, MOV, M4V, or WebM file.")
     candidates = sorted(raw.glob("candidate_*.jpg"))
-    if len(candidates) < MIN_IMAGES:
+    if len(candidates) < MIN_VIDEO_FRAMES:
         raise RuntimeError(
             f"Video yielded only {len(candidates)} frames. Record at least 8 seconds while moving slowly through the scene."
         )
@@ -329,7 +330,7 @@ def _largest_model(sparse: Path) -> Path:
     models = [path for path in sparse.iterdir() if path.is_dir() and (path / "images.bin").is_file()]
     if not models:
         raise RuntimeError(
-            "Camera alignment failed. Use at least 12 sharp ordered photos, or a slow video, with 70-85% overlap; "
+            "Camera alignment failed. Use more sharp ordered photos (12+ recommended), or a slow video, with 70-85% overlap; "
             "keep the subject, background, zoom, lighting, and focus unchanged."
         )
     return max(models, key=lambda path: (path / "images.bin").stat().st_size)
@@ -350,7 +351,8 @@ def _cli_model_stats(executable: Path, model: Path, work: Path) -> tuple[int, in
 
 def _validate_registration(registered: int, total: int, sparse_points: int) -> dict:
     ratio = registered / max(total, 1)
-    if registered < 8 or ratio < 0.55 or sparse_points < 500:
+    required_registered = min(8, max(2, math.ceil(total * 0.55)))
+    if registered < required_registered or ratio < 0.55 or sparse_points < 500:
         raise RuntimeError(
             f"Capture rejected: COLMAP registered {registered}/{total} frames with {sparse_points} sparse points. "
             "Move slowly, keep 70-85% neighbouring overlap, and avoid moving objects, blur, zoom, or exposure changes."
@@ -419,7 +421,12 @@ def _train_registered_gaussians(
     focus: dict | None,
     focus_subject: bool,
     progress: Progress,
+    registered_images: int,
 ) -> tuple[np.ndarray, dict] | None:
+    if registered_images < 8:
+        progress(61, f"COLMAP registered {registered_images} cameras; using dense fusion because 3DGS training needs eight")
+        return None
+
     from studio.gsplat_runtime import gsplat_ready, train_gaussian_scene
 
     if not gsplat_ready():
@@ -494,7 +501,7 @@ def _reconstruct_cli(
         "--output_type", "COLMAP",
         "--max_image_size", str(max_side),
     )
-    trained = _train_registered_gaussians(dense, max_side, focus, focus_subject, progress)
+    trained = _train_registered_gaussians(dense, max_side, focus, focus_subject, progress, registered)
     if trained is not None:
         gaussians, training_stats = trained
         quality.update(training_stats)
@@ -589,7 +596,9 @@ def _reconstruct_pycolmap(
         images,
         undistort_options=undistort_options,
     )
-    trained = _train_registered_gaussians(dense, max_side, focus, focus_subject, progress)
+    trained = _train_registered_gaussians(
+        dense, max_side, focus, focus_subject, progress, reconstruction.num_reg_images()
+    )
     if trained is not None:
         gaussians, training_stats = trained
         quality.update(training_stats)
@@ -792,7 +801,7 @@ def reconstruct(
     focus_subject: bool = True,
 ) -> tuple[np.ndarray, dict]:
     if len(input_paths) < MIN_IMAGES:
-        raise RuntimeError(f"Custom reconstruction needs at least {MIN_IMAGES} overlapping views; 20-60 are recommended.")
+        raise RuntimeError(f"Custom reconstruction needs at least {MIN_IMAGES} overlapping views; 12-60 are recommended.")
     max_side = {384: 1200, 512: 1600, 768: 2000}[resolution]
     work = directory / "custom-work"
     images = work / "images"

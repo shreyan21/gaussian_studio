@@ -2,7 +2,7 @@ import numpy as np
 from PIL import Image
 from plyfile import PlyData, PlyElement
 
-from studio.custom_sfm import _focus_from_camera_rays, _gpu_indices, _limit_patch_match_sources, _patch_match_profile, _prepare_images, _pycolmap_camera_focus, _run_fusion_recovery, _validate_registration, dense_cloud_to_gaussians, extract_video_frames, find_colmap
+from studio.custom_sfm import _focus_from_camera_rays, _gpu_indices, _limit_patch_match_sources, _patch_match_profile, _prepare_images, _pycolmap_camera_focus, _run_fusion_recovery, _train_registered_gaussians, _validate_registration, dense_cloud_to_gaussians, extract_video_frames, find_colmap
 
 
 def test_prepare_images_makes_ordered_equal_square_frames(tmp_path):
@@ -177,4 +177,12 @@ def test_colmap_environment_override(tmp_path, monkeypatch):
 def test_registration_quality_gate_rejects_scattered_capture():
     with np.testing.assert_raises_regex(RuntimeError, "Capture rejected"):
         _validate_registration(5, 20, 200)
+    assert _validate_registration(2, 2, 500)["registered_images"] == 2
     assert _validate_registration(15, 20, 2000)["registration_ratio"] == 0.75
+
+
+def test_small_colmap_capture_skips_eight_view_3dgs_training(tmp_path):
+    updates = []
+    result = _train_registered_gaussians(tmp_path, 1200, None, False, lambda *args: updates.append(args), 2)
+    assert result is None
+    assert "using dense fusion" in updates[0][1]

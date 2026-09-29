@@ -1,6 +1,6 @@
 # Gaussian Scene Studio 5
 
-Single-image AI generation plus hybrid multi-view reconstruction for local NVIDIA workstations. Upload one clear object photograph for TripoSplat generation, or upload one ordinary slow orbit video / 12-80 ordered overlapping photographs for measured COLMAP reconstruction. Both paths produce portable Gaussian PLY output for the same interactive browser viewer.
+Single-image AI generation plus hybrid multi-view reconstruction for local NVIDIA workstations. Upload one clear object photograph for TripoSplat generation, or upload one ordinary slow orbit video / 2-80 ordered overlapping photographs for measured COLMAP reconstruction (12+ photos recommended). Both paths produce portable Gaussian PLY output for the same interactive browser viewer.
 
 No SHARP, AnySplat, or hosted inference API is used. The single-image path runs the official TripoSplat weights locally and labels its unseen surfaces as AI-generated. In the multi-view path, Depth Anything V2 Small supplies only a soft relative-depth constraint; COLMAP cameras and the uploaded pixels remain authoritative.
 
@@ -72,7 +72,7 @@ Keep terminal open. Share complete tokenized URL only with trusted testers. Quic
 
 ## Capture behavior
 
-- Use one 20-60 second video, or 12-80 ordered photos (20-40 photos recommended).
+- Use one 20-60 second video, or 2-80 ordered photos (12-40 photos recommended).
 - Keep object and background completely stationary. Move only camera.
 - Walk one slow, smooth circle, then an optional slightly higher ring. Do not rotate the object.
 - Keep the subject roughly centered and make one continuous orbit.
