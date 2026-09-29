@@ -26,6 +26,7 @@ from studio.config import DATA, MAX_IMAGES, MAX_PIXELS, MAX_TOTAL_UPLOAD, MAX_UP
 from studio.custom_sfm import engine_ready
 from studio.gsplat_runtime import gsplat_ready
 from studio.gaussians import export_scene, make_demo, read_ply
+from studio.triposplat_runtime import triposplat_ready, triposplat_status
 
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 FIXED_RESOLUTION = 768
@@ -117,11 +118,17 @@ class Jobs:
                     image.save(path / ("input.png" if index == 0 else f"input_{index}.png"))
                 thumb = images[0].copy()
                 thumb.thumbnail((480, 360))
+                if thumb.mode != "RGB":
+                    rgba = thumb.convert("RGBA")
+                    flattened = Image.new("RGBA", rgba.size, "white")
+                    flattened.alpha_composite(rgba)
+                    thumb = flattened.convert("RGB")
                 thumb.save(path / "thumbnail.jpg", quality=85)
             atomic_json(path / "request.json", options)
             first_name = Path(filenames[0].replace("\\", "/")).name[:100]
             name = first_name if video_stream is not None or len(images) == 1 else f"{first_name} + {len(images)-1} views"
-            job = {"id": job_id, "name": name, "created": datetime.now(timezone.utc).isoformat(), "status": "running", "progress": 0, "message": "Starting reconstruction", "engine": options["engine"], "image_count": 1 if video_stream is not None else len(images), "source_type": "video" if video_stream is not None else "photos"}
+            generated = options["engine"] == "triposplat"
+            job = {"id": job_id, "name": name, "created": datetime.now(timezone.utc).isoformat(), "status": "running", "progress": 0, "message": "Starting single-image generation" if generated else "Starting reconstruction", "engine": options["engine"], "image_count": 1 if video_stream is not None else len(images), "source_type": "image" if generated else ("video" if video_stream is not None else "photos")}
             atomic_json(path / "job.json", job)
             self.active = job_id
             threading.Thread(target=self.run, args=(job_id,), daemon=True).start()
@@ -227,9 +234,12 @@ class Jobs:
                     if job_id in self.cancelled:
                         return
                     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    worker_environment = os.environ.copy()
+                    worker_environment.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
                     self.process = subprocess.Popen(
                         [sys.executable, "-m", "studio.worker", str(path)],
                         cwd=ROOT,
+                        env=worker_environment,
                         stdout=log,
                         stderr=subprocess.STDOUT,
                         creationflags=creationflags,
@@ -392,7 +402,8 @@ def create_app(data_dir=None):
 
     @app.get("/api/health")
     def health():
-        return {"app": "Gaussian Scene Studio", "version": "4.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready(), "gsplat": gsplat_ready()}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": CHUNKED_VIDEO_UPLOAD_LIMIT // 1024**2, "video_chunk_mb": VIDEO_UPLOAD_CHUNK // 1024**2, "remote_access": bool(access_token)}
+        single_ready, single_message = triposplat_status()
+        return {"app": "Gaussian Scene Studio", "version": "5.0.0", "instance_id": os.environ.get("GSS_INSTANCE_ID"), "hardware": app.state.hardware, "engines": {"custom": engine_ready(), "gsplat": gsplat_ready(), "triposplat": single_ready}, "engine_messages": {"triposplat": single_message}, "active_job": app.state.jobs.active, "max_images": MAX_IMAGES, "max_video_mb": CHUNKED_VIDEO_UPLOAD_LIMIT // 1024**2, "video_chunk_mb": VIDEO_UPLOAD_CHUNK // 1024**2, "remote_access": bool(access_token)}
 
     @app.post("/api/video-uploads", status_code=201)
     def start_video_upload(
@@ -482,12 +493,12 @@ def create_app(data_dir=None):
     async def upload(
         images: list[UploadFile] | None = File(None),
         image: UploadFile | None = File(None),
-        engine: str = Form("custom"),
+        engine: str = Form("auto"),
         device: str = Form("auto"),
         depth_strength: float = Form(1.0),
         view_limit: str = Form("auto"),
     ):
-        if engine != "custom" or device not in ("auto", "cpu", "cuda"):
+        if engine not in ("auto", "custom", "triposplat") or device not in ("auto", "cpu", "cuda"):
             raise HTTPException(422, "Invalid model or device")
         if not 0.25 <= depth_strength <= 1.5:
             raise HTTPException(422, "Invalid depth range")
@@ -499,7 +510,7 @@ def create_app(data_dir=None):
         if image is not None:
             uploads.insert(0, image)
         if not uploads:
-            raise HTTPException(422, "Upload one video or at least 12 overlapping photos")
+            raise HTTPException(422, "Upload one photograph, one video, or at least 12 overlapping photos")
         video_extensions = {".mp4", ".mov", ".m4v", ".webm"}
         video_uploads = [item for item in uploads if (item.content_type or "").startswith("video/") or Path(item.filename or "").suffix.lower() in video_extensions]
         if video_uploads:
@@ -509,6 +520,8 @@ def create_app(data_dir=None):
             suffix = Path(upload_file.filename or "video.mp4").suffix.lower()
             if suffix not in video_extensions:
                 raise HTTPException(415, "Use MP4, MOV, M4V, or WebM video")
+            if engine == "triposplat":
+                raise HTTPException(422, "TripoSplat accepts one photograph, not video")
             upload_file.file.seek(0, os.SEEK_END)
             size = upload_file.file.tell()
             upload_file.file.seek(0)
@@ -516,16 +529,19 @@ def create_app(data_dir=None):
                 raise HTTPException(413, f"Video must be under {MAX_VIDEO_UPLOAD // 1024**2} MB")
             if size < 1024:
                 raise HTTPException(415, "The uploaded video is empty or invalid")
-            options = {"engine": engine, "device": device, "resolution": FIXED_RESOLUTION, "depth_strength": depth_strength, "inputs": [], "video": {"file": "input-video" + suffix, "original_name": Path(upload_file.filename or "video").name[:100]}, "view_limit": view_limit, "focus_subject": FIXED_FOCUS_SUBJECT}
+            options = {"engine": "custom", "device": device, "resolution": FIXED_RESOLUTION, "depth_strength": depth_strength, "inputs": [], "video": {"file": "input-video" + suffix, "original_name": Path(upload_file.filename or "video").name[:100]}, "view_limit": view_limit, "focus_subject": FIXED_FOCUS_SUBJECT}
             try:
                 return app.state.jobs.create([], [upload_file.filename or "video"], options, video_stream=upload_file.file)
             finally:
                 await upload_file.close()
         if len(uploads) > MAX_IMAGES:
             raise HTTPException(422, f"Upload at most {MAX_IMAGES} images")
-        if len(uploads) < 12:
-            raise HTTPException(422, "Custom reconstruction needs at least 12 overlapping photographs, or upload one video")
-
+        if engine == "auto":
+            engine = "triposplat" if len(uploads) == 1 else "custom"
+        if engine == "triposplat" and len(uploads) != 1:
+            raise HTTPException(422, "TripoSplat needs exactly one photograph")
+        if engine == "custom" and len(uploads) < 12:
+            raise HTTPException(422, "Use exactly one photograph for AI generation, or at least 12 overlapping photographs for measured reconstruction")
         cleaned, names = [], []
         for upload_file in uploads:
             payload = await upload_file.read(MAX_UPLOAD+1)
@@ -544,9 +560,12 @@ def create_app(data_dir=None):
                         source.load()
                         oriented = ImageOps.exif_transpose(source)
                         rgba = oriented.convert("RGBA")
-                        clean = Image.new("RGBA", rgba.size, "white")
-                        clean.alpha_composite(rgba)
-                        clean = clean.convert("RGB")
+                        if engine == "triposplat" and rgba.getchannel("A").getextrema()[0] < 255:
+                            clean = rgba
+                        else:
+                            clean = Image.new("RGBA", rgba.size, "white")
+                            clean.alpha_composite(rgba)
+                            clean = clean.convert("RGB")
                         clean.thumbnail((2048,2048), Image.Resampling.LANCZOS)
                         cleaned.append(clean)
                         names.append(upload_file.filename or "image.png")
@@ -556,6 +575,8 @@ def create_app(data_dir=None):
             {"file": "input.png" if i == 0 else f"input_{i}.png", "original_name": Path(names[i].replace("\\", "/")).name[:100]}
             for i in range(len(cleaned))
         ]
+        if engine == "triposplat" and not triposplat_ready():
+            raise HTTPException(503, triposplat_status()[1] + " Run the TripoSplat setup and restart Studio.")
         options = {"engine": engine, "device": device, "resolution": FIXED_RESOLUTION, "depth_strength": depth_strength, "inputs": inputs, "video": None, "view_limit": view_limit, "focus_subject": FIXED_FOCUS_SUBJECT}
         return app.state.jobs.create(cleaned, names, options)
 

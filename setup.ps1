@@ -2,6 +2,7 @@
 param(
     [switch]$SkipColmapDownload,
     [switch]$SkipGsplat,
+    [switch]$SkipTripoSplat,
     [string]$PythonExe = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -55,6 +56,13 @@ if (-not $SkipGsplat) {
     Invoke-Checked $appPython @('scripts\depth_prior_smoke.py')
     Write-Host 'Testing the precompiled gsplat CUDA extension...' -ForegroundColor Cyan
     Invoke-Checked $appPython @('scripts\gsplat_smoke.py')
+}
+
+if (-not $SkipTripoSplat) {
+    Write-Host 'Installing the optional official TripoSplat single-image engine (~3.8 GB checkpoints)...' -ForegroundColor Cyan
+    Invoke-Checked $appPython @('-m','pip','install','--index-url','https://download.pytorch.org/whl/cu124','torchvision==0.19.1')
+    Invoke-Checked $appPython @('-m','pip','install','-r','requirements-triposplat.txt')
+    Invoke-Checked $appPython @('scripts\setup_triposplat.py')
 }
 
 $colmapRoot = Join-Path $PSScriptRoot 'tools\colmap'

@@ -1,4 +1,4 @@
-"""One pretrained-free reconstruction process per job."""
+"""One isolated reconstruction or generation process per job."""
 import gc
 import json
 import os
@@ -11,6 +11,7 @@ from PIL import Image
 
 from studio.custom_sfm import extract_video_frames, reconstruct
 from studio.gaussians import export_scene
+from studio.triposplat_runtime import generate_single_image
 
 
 def progress(directory, percent, message):
@@ -25,8 +26,26 @@ def main():
     options = json.loads((directory / "request.json").read_text(encoding="utf-8"))
     started = time.monotonic()
     try:
+        if options["engine"] == "triposplat":
+            inputs = options.get("inputs", [])
+            if options.get("video") or len(inputs) != 1:
+                raise RuntimeError("TripoSplat requires exactly one source photograph.")
+            gaussians, meta = generate_single_image(
+                directory,
+                directory / inputs[0]["file"],
+                lambda percent, message: progress(directory, percent, message),
+            )
+            meta["source_type"] = "image"
+            meta["uploaded_count"] = 1
+            progress(directory, 94, "Writing generated Gaussian PLY and browser scene")
+            meta["seconds"] = round(time.monotonic() - started, 2)
+            export_scene(directory, gaussians, meta)
+            del gaussians
+            gc.collect()
+            progress(directory, 100, "Generated 3D object ready")
+            return 0
         if options["engine"] != "custom":
-            raise RuntimeError("This build contains only the pretrained-free custom reconstruction engine.")
+            raise RuntimeError("Unknown reconstruction engine.")
         video = options.get("video")
         if video:
             frame_budget = {384: 28, 512: 36, 768: 44}[options["resolution"]]

@@ -32,10 +32,10 @@ def test_home_and_procedural_viewer_without_external_engine(client):
     assert client.get("/static/renderer.js").status_code == 200
     health = client.get("/api/health").json()
     assert health["app"] == "Gaussian Scene Studio"
-    assert health["version"] == "4.0.0"
+    assert health["version"] == "5.0.0"
     assert health["max_images"] == 80
     assert health["video_chunk_mb"] == 8
-    assert set(health["engines"]) == {"custom", "gsplat"}
+    assert set(health["engines"]) == {"custom", "gsplat", "triposplat"}
     assert client.get("/api/demo/scene.gsb").content[:4] == b"GSS1"
     assert client.get("/api/demo/scene.json").json()["method"] == "demo"
 
@@ -100,6 +100,45 @@ def test_custom_multiview_saved_in_order(client, monkeypatch, tmp_path):
 def test_custom_requires_twelve_views(client):
     assert client.post("/api/jobs", files=views(11)).status_code == 422
     assert client.post("/api/jobs", files=views(12), data={"device": "cpu"}).status_code == 422
+
+
+def test_single_photo_selects_triposplat(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(Jobs, "run", lambda *args: None)
+    monkeypatch.setattr("studio.server.triposplat_ready", lambda: True)
+    transparent = io.BytesIO()
+    Image.new("RGBA", (96, 96), (255, 80, 120, 160)).save(transparent, format="PNG")
+    response = client.post(
+        "/api/jobs",
+        files={"images": ("rose.png", transparent.getvalue(), "image/png")},
+    )
+    assert response.status_code == 202
+    job = response.json()
+    request = json.loads((tmp_path / "jobs" / job["id"] / "request.json").read_text(encoding="utf-8"))
+    assert job["engine"] == "triposplat"
+    assert job["source_type"] == "image"
+    assert request["engine"] == "triposplat"
+    assert request["inputs"] == [{"file": "input.png", "original_name": "rose.png"}]
+    with Image.open(tmp_path / "jobs" / job["id"] / "input.png") as saved:
+        assert saved.mode == "RGBA"
+    with Image.open(tmp_path / "jobs" / job["id"] / "thumbnail.jpg") as thumbnail:
+        assert thumbnail.mode == "RGB"
+
+
+def test_triposplat_rejects_multiple_photos(client):
+    response = client.post("/api/jobs", files=views(12), data={"engine": "triposplat"})
+    assert response.status_code == 422
+    assert "exactly one" in response.json()["detail"]
+
+
+def test_single_photo_reports_missing_triposplat(client, monkeypatch):
+    monkeypatch.setattr("studio.server.triposplat_ready", lambda: False)
+    monkeypatch.setattr("studio.server.triposplat_status", lambda: (False, "TripoSplat files are missing."))
+    response = client.post(
+        "/api/jobs",
+        files={"images": ("rose.png", photo((96, 96)), "image/png")},
+    )
+    assert response.status_code == 503
+    assert "Run the TripoSplat setup" in response.json()["detail"]
 
 
 def test_custom_accepts_video_as_single_source(client, monkeypatch, tmp_path):

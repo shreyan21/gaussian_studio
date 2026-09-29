@@ -8,11 +8,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from studio.custom_sfm import engine_ready, find_colmap
 from studio.gsplat_runtime import gsplat_ready
+from studio.triposplat_runtime import triposplat_status
 
 
 def check():
     import psutil
     executable = find_colmap()
+    single_ready, single_message = triposplat_status()
     result = {
         "status": "ready",
         "python": platform.python_version(),
@@ -22,6 +24,8 @@ def check():
         "available_ram_gb": round(psutil.virtual_memory().available / 1024**3, 1),
         "custom_engine": engine_ready(),
         "true_3dgs": gsplat_ready(),
+        "triposplat": single_ready,
+        "triposplat_status": single_message,
         "colmap": str(executable) if executable else None,
         "cuda": False,
     }

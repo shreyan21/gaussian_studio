@@ -1,0 +1,5 @@
+# Optional single-image TripoSplat inference. Torch/torchvision are installed
+# together for the target CUDA runtime by setup.ps1 or supplied by Kaggle.
+huggingface-hub==0.35.3
+safetensors==0.6.2
+tqdm==4.67.1

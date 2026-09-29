@@ -1,8 +1,18 @@
-# Gaussian Scene Studio 4
+# Gaussian Scene Studio 5
 
-Hybrid multi-view reconstruction for local NVIDIA workstations. Upload one ordinary slow orbit video or ordered overlapping photographs; the app selects sharp keyframes, estimates camera poses, predicts a lightweight depth prior for smooth surfaces, trains a true 3D Gaussian scene from the registered views, and opens an interactive browser viewer.
+Single-image AI generation plus hybrid multi-view reconstruction for local NVIDIA workstations. Upload one clear object photograph for TripoSplat generation, or upload one ordinary slow orbit video / 12-80 ordered overlapping photographs for measured COLMAP reconstruction. Both paths produce portable Gaussian PLY output for the same interactive browser viewer.
 
-No SHARP, AnySplat, or cloud inference is used. Depth Anything V2 Small supplies only a soft relative-depth constraint; COLMAP cameras and the uploaded pixels remain authoritative.
+No SHARP, AnySplat, or hosted inference API is used. The single-image path runs the official TripoSplat weights locally and labels its unseen surfaces as AI-generated. In the multi-view path, Depth Anything V2 Small supplies only a soft relative-depth constraint; COLMAP cameras and the uploaded pixels remain authoritative.
+
+## One photograph: TripoSplat
+
+- A single JPEG, PNG, or WebP automatically selects TripoSplat.
+- The model removes the background and generates a foreground object with up to 65,536 Gaussians on an 8 GB GPU, 131,072 on a 10-19 GB GPU, or 262,144 on a 20+ GB GPU.
+- The app loads TripoSplat stages sequentially and clears CUDA memory between them to reduce peak VRAM use.
+- Rotation is limited to a broad 145-degree yaw and 55-degree pitch around the source view. This exposes useful 3D while avoiding an unrestricted underside view.
+- Hidden sides are plausible AI predictions. They are not measurements and may be wrong.
+
+Set `GSS_TRIPOSPLAT_GAUSSIANS=32768` before startup if an 8 GB workstation still runs out of CUDA memory. The first setup downloads approximately 3.8 GB of official checkpoints.
 
 Dense fusion now retries weak results automatically: strict geometric consistency first, relaxed geometric fusion second, and a photometric recovery pass only when necessary. This avoids discarding otherwise usable small-object captures at the very end of a run.
 
@@ -31,9 +41,9 @@ Set-Location D:\GaussianSceneStudio
 .\Setup NVIDIA Workstation.cmd
 ```
 
-Setup creates `.venv`, installs CUDA PyTorch 2.4.1 plus gsplat's official `pt24cu124` Windows wheel, caches the approximately 100 MB Depth Anything V2 Small checkpoint, downloads official COLMAP 4.2.0 CUDA binaries, verifies SHA-256, and runs automated tests. If this repository already has a Python 3.11 `.venv` from Studio 3, rename or remove only that `.venv` folder before running setup again.
+Setup creates `.venv`, installs CUDA PyTorch 2.4.1 plus gsplat's official `pt24cu124` Windows wheel, installs the pinned official TripoSplat source/checkpoints, caches the approximately 100 MB Depth Anything V2 Small checkpoint, downloads official COLMAP 4.2.0 CUDA binaries, verifies SHA-256, and runs automated tests. If this repository already has a Python 3.11 `.venv` from Studio 3, rename or remove only that `.venv` folder before running setup again.
 
-The first setup/Kaggle run needs Internet access to download the exact AI checkpoint. It is reused from `data/models` afterward. For an offline run without AI guidance, set `GSS_DISABLE_AI_DEPTH=1` before starting the server; the result then uses the original COLMAP + gsplat path.
+The first setup/Kaggle run needs Internet access to download the exact AI checkpoints. They are reused afterward. For an offline multi-view run without AI depth guidance, set `GSS_DISABLE_AI_DEPTH=1` before starting the server; the result then uses the original COLMAP + gsplat path. TripoSplat itself requires its downloaded checkpoints.
 
 Start app:
 
@@ -72,7 +82,7 @@ The application uses the fixed **High - 2000 px** full-scene profile: up to 44 s
 
 The pipeline rejects captures when fewer than eight cameras register, less than 55% of the inputs align, or the sparse model has fewer than 500 points. This is intentional: the viewer should not present disconnected noise as a successful 3D scene.
 
-Every reconstruction runs in full-scene mode. There is no central crop, foreground mask, or object-isolation filter: the complete registered views train the geometry, and foreground plus background Gaussians are exported together. Only invalid, oversized, highly elongated, or extremely transparent splats are filtered. Thin moving leaves can still duplicate because a dynamic subject violates multi-view geometry; use a windless capture whenever possible.
+Every multi-view reconstruction runs in full-scene mode. There is no central crop, foreground mask, or object-isolation filter: the complete registered views train the geometry, and foreground plus background Gaussians are exported together. Only invalid, oversized, highly elongated, or extremely transparent splats are filtered. Thin moving leaves can still duplicate because a dynamic subject violates multi-view geometry; use a windless capture whenever possible. The separate one-photo TripoSplat path always isolates a foreground object.
 
 ## RTX A1000 8 GB settings
 
@@ -86,7 +96,7 @@ Every reconstruction runs in full-scene mode. There is no central crop, foregrou
 
 ## Kaggle GPU test
 
-Import `notebooks/Gaussian_Studio_Custom_Kaggle.ipynb` into Kaggle, enable a GPU and Internet in Notebook options, then run its single code cell. The notebook pulls the latest `master`, installs `pycolmap-cuda12==4.2.0` and `gsplat==1.5.3`, starts the app, and prints a protected Cloudflare link. Open the complete URL including `?token=...`; an unprotected URL correctly shows **Access denied**.
+Import `notebooks/Gaussian_Studio_Custom_Kaggle.ipynb` into Kaggle, enable a GPU and Internet in Notebook options, then run its single code cell. The notebook pulls the latest `master`, installs the multi-view stack, downloads the pinned TripoSplat source/checkpoints, starts the app, and prints a protected Cloudflare link. Open the complete URL including `?token=...`; an unprotected URL correctly shows **Access denied**. The initial TripoSplat download is approximately 3.8 GB and therefore makes the first notebook startup slower.
 
 Kaggle accepts videos up to 500 MB. The browser sends videos in protected 8 MB chunks and the server reassembles them before reconstruction, avoiding Cloudflare's per-request body limit. Local workstation mode defaults to 750 MB. Keep enough free Kaggle working-storage space for the original video, extracted frames, and reconstruction outputs.
 
@@ -113,7 +123,7 @@ Output is Gaussian splats, not a watertight CAD/Blender mesh.
 
 ## Commercial-use position
 
-Application code is MIT, COLMAP is BSD-3-Clause, and both gsplat and the Depth Anything V2 Small checkpoint are Apache-2.0. Preserve third-party notices and obtain organisation-specific legal review before commercial distribution. See [docs/MODEL-LICENSES.md](docs/MODEL-LICENSES.md).
+Application code is MIT, COLMAP is BSD-3-Clause, and both gsplat and the Depth Anything V2 Small checkpoint are Apache-2.0. TripoSplat's repository labels its code and released weights MIT, while its DINOv3 encoder lineage is governed by Meta's DINOv3 terms. Preserve all third-party notices and obtain organisation-specific legal review before commercial distribution. See [docs/MODEL-LICENSES.md](docs/MODEL-LICENSES.md).
 
 ## Evidence boundary
 
