@@ -19,6 +19,10 @@ def test_checkpoint_inventory_is_complete():
     assert all(name.endswith(".safetensors") for name in CHECKPOINT_FILES.values())
 
 
+def test_video_frame_budget_bounds_slow_camera_mapping():
+    assert worker.VIDEO_FRAME_BUDGETS == {384: 24, 512: 28, 768: 32}
+
+
 def test_viewer_transform_is_upright_and_preserves_handedness():
     transform = np.asarray(TRIPOSPLAT_VIEWER_TRANSFORM)
 

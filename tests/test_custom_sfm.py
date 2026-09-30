@@ -2,7 +2,7 @@ import numpy as np
 from PIL import Image
 from plyfile import PlyData, PlyElement
 
-from studio.custom_sfm import _focus_from_camera_rays, _gpu_indices, _limit_patch_match_sources, _patch_match_profile, _prepare_images, _pycolmap_camera_focus, _run_fusion_recovery, _train_registered_gaussians, _validate_registration, dense_cloud_to_gaussians, extract_video_frames, find_colmap
+from studio.custom_sfm import _focus_from_camera_rays, _gpu_indices, _limit_patch_match_sources, _ordered_circular_pairs, _patch_match_profile, _prepare_images, _pycolmap_camera_focus, _run_fusion_recovery, _train_registered_gaussians, _validate_registration, dense_cloud_to_gaussians, extract_video_frames, find_colmap
 
 
 def test_prepare_images_makes_ordered_equal_square_frames(tmp_path):
@@ -40,6 +40,16 @@ def test_video_frames_are_evenly_selected_and_renamed(tmp_path, monkeypatch):
     output = extract_video_frames(tmp_path / "capture.mp4", tmp_path / "selected", max_frames=12)
     assert [path.name for path in output] == [f"input_{index:03d}.jpg" for index in range(12)]
     assert all(path.is_file() for path in output)
+
+
+def test_ordered_video_pairs_are_local_and_close_the_orbit():
+    names = [f"{index:04d}.jpg" for index in range(32)]
+    pairs = _ordered_circular_pairs(names, overlap=6)
+
+    assert ("0000.jpg", "0001.jpg") in pairs
+    assert ("0000.jpg", "0031.jpg") in pairs
+    assert len(pairs) == 32 * 6
+    assert len(pairs) < 32 * 31 // 2
 
 
 def test_patch_match_profiles_bound_dense_work():

@@ -360,6 +360,30 @@ def _validate_registration(registered: int, total: int, sparse_points: int) -> d
     return {"registered_images": registered, "registration_ratio": round(ratio, 4), "sparse_points": sparse_points}
 
 
+def _ordered_circular_pairs(names: list[str], overlap: int = 8) -> list[tuple[str, str]]:
+    """Pair nearby ordered frames and close the final-to-first orbit seam."""
+    names = sorted(names)
+    if len(names) < 2:
+        return []
+    radius = min(overlap, max(1, len(names) // 2))
+    pairs = set()
+    for index in range(len(names)):
+        for offset in range(1, radius + 1):
+            other = (index + offset) % len(names)
+            left, right = sorted((index, other))
+            if left != right:
+                pairs.add((names[left], names[right]))
+    return sorted(pairs)
+
+
+def _write_ordered_pair_list(images: Path, target: Path, overlap: int = 8) -> int:
+    pairs = _ordered_circular_pairs([path.name for path in images.glob("*.jpg")], overlap)
+    if not pairs:
+        raise RuntimeError("Ordered video matching needs at least two extracted frames.")
+    target.write_text("".join(f"{left} {right}\n" for left, right in pairs), encoding="utf-8")
+    return len(pairs)
+
+
 def _focus_from_camera_rays(centers, directions) -> dict | None:
     centers = np.asarray(centers, dtype=np.float64)
     directions = np.asarray(directions, dtype=np.float64)
@@ -553,6 +577,7 @@ def _reconstruct_pycolmap(
     use_gpu: bool,
     progress: Progress,
     focus_subject: bool,
+    ordered_video: bool = False,
 ) -> tuple[Path | np.ndarray, str, dict, dict | None, bool]:
     import pycolmap
 
@@ -567,6 +592,7 @@ def _reconstruct_pycolmap(
     extraction_options = pycolmap.FeatureExtractionOptions()
     extraction_options.max_image_size = max_side
     extraction_options.type = pycolmap.FeatureExtractorType.SIFT
+    total_images = len(list(images.glob("*.jpg")))
     progress(12, "Extracting photo features")
     pycolmap.extract_features(
         database,
@@ -575,14 +601,60 @@ def _reconstruct_pycolmap(
         extraction_options=extraction_options,
         device=device,
     )
-    progress(27, "Matching overlapping views")
-    pycolmap.match_exhaustive(database, device=device)
-    progress(42, "Solving cameras and sparse geometry")
-    maps = pycolmap.incremental_mapping(database, images, sparse)
+    if ordered_video:
+        pair_list = work / "ordered-video-pairs.txt"
+        pair_count = _write_ordered_pair_list(images, pair_list)
+        pairing_options = pycolmap.ImportedPairingOptions()
+        pairing_options.match_list_path = pair_list
+        progress(27, f"Matching {pair_count} nearby and loop-closing video pairs")
+        pycolmap.match_image_pairs(database, pairing_options=pairing_options, device=device)
+        matching_strategy = "ordered-circular"
+    else:
+        progress(27, "Matching overlapping views")
+        pycolmap.match_exhaustive(database, device=device)
+        matching_strategy = "exhaustive"
+
+    mapper_options = pycolmap.IncrementalPipelineOptions()
+    mapper_options.multiple_models = False
+    mapper_options.max_num_models = 1
+    mapper_options.ba_global_frames_ratio = 1.5
+    mapper_options.ba_global_points_ratio = 1.5
+    mapper_options.ba_global_max_num_iterations = 50
+    mapper_options.ba_global_max_refinements = 2
+    mapper_options.ba_local_max_refinements = 1
+    mapper_options.max_runtime_seconds = max(300, min(900, total_images * 20))
+    registered_so_far = 0
+
+    def initial_pair_progress():
+        nonlocal registered_so_far
+        registered_so_far = 2
+        progress(43, f"Initial camera pair solved (2/{total_images})")
+
+    def next_image_progress():
+        nonlocal registered_so_far
+        registered_so_far = min(total_images, registered_so_far + 1)
+        percent = min(53, 42 + max(1, round(11 * registered_so_far / max(total_images, 1))))
+        progress(percent, f"Solving cameras and sparse geometry ({registered_so_far}/{total_images})")
+
+    progress(42, f"Solving cameras and sparse geometry (0/{total_images})")
+    maps = pycolmap.incremental_mapping(
+        database,
+        images,
+        sparse,
+        options=mapper_options,
+        initial_image_pair_callback=initial_pair_progress,
+        next_image_callback=next_image_progress,
+    )
     if not maps:
         raise RuntimeError("Camera alignment failed. Capture a slow video or 20-40 ordered photos with 70-85% overlap.")
     reconstruction = max(maps.values(), key=lambda item: item.num_reg_images())
-    quality = _validate_registration(reconstruction.num_reg_images(), len(list(images.glob("*.jpg"))), reconstruction.num_points3D())
+    progress(54, f"Solved {reconstruction.num_reg_images()}/{total_images} camera poses")
+    quality = _validate_registration(reconstruction.num_reg_images(), total_images, reconstruction.num_points3D())
+    quality.update({
+        "matching_strategy": matching_strategy,
+        "selected_frames": total_images,
+        "mapper_bounded_bundle_adjustment": True,
+    })
     focus = _pycolmap_camera_focus(reconstruction)
     model = sparse / "best"
     model.mkdir(exist_ok=True)
@@ -799,6 +871,7 @@ def reconstruct(
     use_gpu: bool,
     progress: Progress,
     focus_subject: bool = True,
+    ordered_video: bool = False,
 ) -> tuple[np.ndarray, dict]:
     if len(input_paths) < MIN_IMAGES:
         raise RuntimeError(f"Custom reconstruction needs at least {MIN_IMAGES} overlapping views; 12-60 are recommended.")
@@ -814,7 +887,7 @@ def reconstruct(
         )
     else:
         result, backend, quality, focus, trained = _reconstruct_pycolmap(
-            images, work, max_side, use_gpu, progress, focus_subject
+            images, work, max_side, use_gpu, progress, focus_subject, ordered_video
         )
     focus_stats = {}
     if trained:

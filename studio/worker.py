@@ -13,6 +13,8 @@ from studio.custom_sfm import extract_video_frames, reconstruct
 from studio.gaussians import export_scene
 from studio.triposplat_runtime import generate_single_image
 
+VIDEO_FRAME_BUDGETS = {384: 24, 512: 28, 768: 32}
+
 
 def progress(directory, percent, message):
     temporary = directory / "progress.tmp"
@@ -48,7 +50,7 @@ def main():
             raise RuntimeError("Unknown reconstruction engine.")
         video = options.get("video")
         if video:
-            frame_budget = {384: 28, 512: 36, 768: 44}[options["resolution"]]
+            frame_budget = VIDEO_FRAME_BUDGETS[options["resolution"]]
             progress(directory, 3, f"Extracting up to {frame_budget} sharp, evenly spaced keyframes")
             paths = extract_video_frames(directory / video["file"], directory / "video-keyframes", max_frames=frame_budget)
             with Image.open(paths[0]) as source:
@@ -66,6 +68,7 @@ def main():
             options["device"] != "cpu",
             lambda percent, message: progress(directory, percent, message),
             options.get("focus_subject", True),
+            ordered_video=bool(video),
         )
         meta["source_type"] = source_type
         meta["uploaded_count"] = 1 if video else len(paths)

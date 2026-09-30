@@ -78,7 +78,7 @@ Keep terminal open. Share complete tokenized URL only with trusted testers. Quic
 - Keep the subject roughly centered and make one continuous orbit.
 - Ordinary exposure and focus variation is tolerated, but moving petals and unseen surfaces cannot be reconstructed reliably.
 
-The application uses the fixed **High - 2000 px** full-scene profile: up to 44 sharp evenly spaced video frames, 9,500 optimization steps, a 750,000-splat GPU budget, and an Apache-2.0 AI depth prior for smoother weak-texture geometry. Four photographs are normally insufficient for a 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
+The application uses the fixed **High - 2000 px** full-scene profile: up to 32 sharp evenly spaced video frames, 9,500 optimization steps, a 750,000-splat GPU budget, and an Apache-2.0 AI depth prior for smoother weak-texture geometry. Video frames use nearby circular matching, including the last-to-first orbit seam, instead of an unnecessary all-pairs search. Camera solving reports registered-frame progress and bounds repeated global bundle adjustment so it does not appear frozen at 42%. Four photographs are normally insufficient for a 360-degree reconstruction. Rotating an object while its background stays fixed violates camera geometry and causes shattered output.
 
 The pipeline rejects captures when fewer than eight cameras register, less than 55% of the inputs align, or the sparse model has fewer than 500 points. This is intentional: the viewer should not present disconnected noise as a successful 3D scene.
 
